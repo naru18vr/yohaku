@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f3ed">
+  <title>yohaku — 何もしないための3分間</title>
+  <meta name="description" content="疲れた時に、1分だけでも静かに休むための小さな瞑想タイマー。呼吸は、あなたのペースで。">
+  <link rel="canonical" href="https://naru18vr.github.io/yohaku/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:site_name" content="yohaku">
+  <meta property="og:title" content="yohaku — 何もしないための3分間">
+  <meta property="og:description" content="疲れた時に、1分だけでも静かに休むための小さな瞑想タイマー。">
+  <meta property="og:url" content="https://naru18vr.github.io/yohaku/">
+  <meta property="og:image" content="https://naru18vr.github.io/yohaku/assets/ogp.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="yohaku — 何もしないための3分間">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">休む画面へ</a>
+  <header class="site-header">
+    <span class="brand" aria-label="yohaku（よはく）">
+      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M27 16A11 11 0 1 1 16 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <span aria-hidden="true">yohaku</span>
+    </span>
+    <span class="header-note" aria-hidden="true">ただ、ひと息。</span>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section id="home-view" class="view home-view" aria-labelledby="home-title">
+      <h1 id="home-title" class="welcome-title">今日はもう、<br>少し休んでもいい。</h1>
+      <div class="orb home-orb" aria-hidden="true"><div class="orb-ring"></div><div class="orb-core"></div></div>
+      <div class="home-actions">
+        <button id="start-button" class="primary-button" type="button"><span id="start-label">3分休む</span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <fieldset class="duration-picker">
+          <legend class="sr-only">休む時間</legend>
+          <label class="duration-choice"><input type="radio" name="duration" value="1"><span>1分</span></label>
+          <label class="duration-choice"><input type="radio" name="duration" value="3" checked><span>3分</span></label>
+          <label class="duration-choice"><input type="radio" name="duration" value="5"><span>5分</span></label>
+          <label class="duration-choice"><input type="radio" name="duration" value="10"><span>10分</span></label>
+        </fieldset>
+        <button class="sound-button settings-trigger" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m11 5-6 5H2v4h3l6 5V5Zm4 4a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>音 <span class="sound-separator" aria-hidden="true">·</span> <span class="sound-label">無音</span></span><svg class="chevron" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </section>
+
+    <section id="session-view" class="view session-view" aria-labelledby="session-title" hidden>
+      <h1 id="session-title" class="session-title" tabindex="-1">いまは、ただ休む。</h1>
+      <div class="breath-area">
+        <div class="orb session-orb" aria-hidden="true"><div class="orb-ring"></div><div id="breathing-circle" class="orb-core"></div></div>
+        <p id="breath-label" class="breath-label" aria-hidden="true">吸う</p>
+        <p class="breath-note">呼吸は、あなたのペースで。</p>
+        <p class="sr-only">円が吸う4秒、少し止める2秒、吐く6秒の目安を示します。合わせずに、自然な呼吸で休んでも大丈夫です。</p>
+      </div>
+      <div class="session-actions">
+        <button id="time-toggle" class="time-toggle" type="button" aria-label="残り時間を隠す" aria-describedby="timer" aria-pressed="false"><span id="timer" class="time-value" role="timer" aria-live="off" aria-label="残り3分0秒">03:00</span><span id="time-hidden-label" class="time-hidden-label" hidden>時間を表示</span><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" stroke="currentColor" stroke-width="1.3"/><circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.3"/></svg></button>
+        <div class="session-controls"><button id="pause-button" class="secondary-button" type="button">一時停止</button><button id="stop-button" class="text-button" type="button">ここで終わる</button></div>
+        <button class="sound-button settings-trigger" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m11 5-6 5H2v4h3l6 5V5Zm4 4a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>音 <span class="sound-separator" aria-hidden="true">·</span> <span class="sound-label">無音</span></span><svg class="chevron" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </section>
+
+    <section id="complete-view" class="view complete-view" aria-labelledby="complete-title" hidden>
+      <h1 id="complete-title" class="welcome-title" tabindex="-1">おつかれさま。</h1>
+      <p class="complete-note">今日はここまででも、大丈夫。</p>
+      <div class="orb complete-orb" aria-hidden="true"><div class="orb-ring"></div><div class="orb-core"></div></div>
+      <button id="restart-button" class="primary-button" type="button">もう3分休む</button>
+      <button id="finish-button" class="text-button" type="button">終わる</button>
+    </section>
+
+    <div class="audio-feedback"><p id="audio-notice" role="status" hidden></p><button id="retry-audio" class="text-button" type="button" hidden>音を再開</button></div>
+    <p id="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+    <noscript><p class="noscript-note">タイマーを使うにはJavaScriptを有効にしてください。ここで、少し休むだけでも大丈夫です。</p></noscript>
+  </main>
+
+  <footer class="site-footer"><p>何もしないための3分間。</p><span class="footer-line" aria-hidden="true"></span></footer>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <div class="dialog-heading"><h2 id="settings-title">音と表示</h2><button id="close-settings" class="icon-button" type="button" aria-label="設定を閉じる" autofocus><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
+    <fieldset class="setting-group"><legend>環境音</legend><div class="segmented-options">
+      <label class="segment-choice"><input type="radio" name="sound" value="silent" checked><span>無音</span></label>
+      <label class="segment-choice"><input type="radio" name="sound" value="rain"><span>雨</span></label>
+      <label class="segment-choice"><input type="radio" name="sound" value="waves"><span>波</span></label>
+    </div><p class="setting-note">音は休み始めてから流れます。</p></fieldset>
+    <div class="setting-group volume-group"><div class="volume-heading"><label for="volume">音量</label><output id="volume-value" for="volume">35%</output></div><input id="volume" type="range" min="0" max="100" value="35" step="1" disabled aria-describedby="volume-note"><p id="volume-note" class="setting-note">はじめは小さな音から。</p></div>
+    <label class="bell-setting"><span>終わりのベル<span class="setting-note">最後に、小さく一度だけ。</span></span><input id="bell-enabled" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span></label>
+    <fieldset class="setting-group theme-group"><legend>画面の明るさ</legend><div class="segmented-options">
+      <label class="segment-choice"><input type="radio" name="theme" value="auto" checked><span>端末に合わせる</span></label>
+      <label class="segment-choice"><input type="radio" name="theme" value="light"><span>明るめ</span></label>
+      <label class="segment-choice"><input type="radio" name="theme" value="dark"><span>暗め</span></label>
+    </div></fieldset>
+    <p class="privacy-note">設定はこのブラウザだけに保存されます。</p>
+  </dialog>
+</body>
+</html>
