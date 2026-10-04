@@ -193,7 +193,7 @@ test("初回は3分・無音・ベルOFF。音を自動再生しない", () => {
   assert.equal(app.audioContexts.length, 0);
 });
 
-for (const minutes of [1, 3, 5, 10, 17, 45, 60]) test(`${minutes}分が正確に終了し、再スタートできる`, () => {
+for (const minutes of [1, 3, 5, 10, 17, 45, 60, 120, 180, 360]) test(`${minutes}分が正確に終了し、再スタートできる`, () => {
   const app = harness(); app.input("custom-duration", minutes); app.click("start-button");
   app.advance(minutes * 60_000 - 1000);
   assert.equal(app.byId("timer").textContent, "00:01");
@@ -211,9 +211,9 @@ for (const minutes of [1, 3, 5, 10, 17, 45, 60]) test(`${minutes}分が正確に
   assert.equal(app.timers.size, 0);
 });
 
-test("1〜60分の数値入力・スライダー・保存を同期し、範囲外の値を補正する", () => {
+test("1〜360分の数値入力・スライダー・保存を同期し、範囲外の値を補正する", () => {
   const app = harness();
-  for (let minutes = 1; minutes <= 60; minutes++) {
+  for (let minutes = 1; minutes <= 360; minutes++) {
     app.input("custom-duration", minutes);
     assert.equal(app.byId("start-label").textContent, `${minutes}分休む`);
     assert.equal(Number(app.byId("duration-range").value), minutes);
@@ -223,36 +223,36 @@ test("1〜60分の数値入力・スライダー・保存を同期し、範囲�
   assert.equal(Number(app.byId("custom-duration").value), 27);
   app.radio("duration", 3);
   assert.equal(Number(app.byId("custom-duration").value), 3);
-  for (const [value, expected] of [[100, 60], [0, 1], [12.6, 13], ["", 13]]) {
+  for (const [value, expected] of [[100, 100], [999, 360], [0, 1], [12.6, 13], ["", 13]]) {
     app.input("custom-duration", value); app.byId("custom-duration").dispatch("change");
     assert.equal(Number(app.byId("custom-duration").value), expected);
   }
-  for (const minutes of [1, 17, 60, 0, 61, 3.5, "60"]) {
+  for (const minutes of [1, 17, 60, 61, 180, 360, 0, 361, 3.5, "360"]) {
     const restored = harness({ saved: JSON.stringify({ minutes }) });
-    const expected = Number.isInteger(minutes) && minutes >= 1 && minutes <= 60 ? minutes : 3;
+    const expected = Number.isInteger(minutes) && minutes >= 1 && minutes <= 360 ? minutes : 3;
     assert.equal(Number(restored.byId("custom-duration").value), expected);
   }
 });
 
-test("60分でも全ての合成音のループを再生成せず、ガイド・ベルと一緒に終了する", async () => {
+test("6時間でも全ての合成音のループを再生成せず、ガイド・ベルと一緒に終了する", async () => {
   for (const sound of ["rain", "waves", "fire", "white", "pink", "tone40"]) {
-    const app = harness({ sampleRate: 4000 }); app.input("custom-duration", 60); app.radio("sound", sound);
+    const app = harness({ sampleRate: 4000 }); app.input("custom-duration", 360); app.radio("sound", sound);
     app.input("guide-enabled", true, "change"); app.input("bell-enabled", true, "change");
     app.click("start-button"); await flush();
     const ambient = app.audioNodes.find(node => node.kind === "source" && node.buffer.numberOfChannels === 2);
-    app.visibility(true); app.elapseWithoutCallbacks(30 * 60_000); app.visibility(false); await flush();
-    assert.equal(app.byId("timer").textContent, "30:00");
-    assert.equal(ambient.starts.length, 1); assert.equal(ambient.stops.at(-1), 3600);
+    app.visibility(true); app.elapseWithoutCallbacks(180 * 60_000); app.visibility(false); await flush();
+    assert.equal(app.byId("timer").textContent, "180:00");
+    assert.equal(ambient.starts.length, 1); assert.equal(ambient.stops.at(-1), 21600);
     assert.equal(app.audioNodes.filter(node => node.kind === "source" && node.buffer.numberOfChannels === 2).length, 1);
-    app.advance(30 * 60_000); app.advance(3500); await flush();
+    app.advance(180 * 60_000); app.advance(3500); await flush();
     assert.equal(app.byId("complete-view").hidden, false);
     assert.ok(app.audioNodes.every(node => node.disconnected));
   }
 });
 
-test("録音の雨を60分流し、4秒の等電力クロスフェードで2つの再生元を交互に使う", async () => {
-  const app = harness(); app.input("custom-duration", 60); app.radio("sound", "rain2"); app.click("start-button"); await flush();
-  for (let loop = 0; loop < 5; loop++) {
+test("録音の雨を6時間流し、4秒の等電力クロスフェードで2つの再生元を交互に使う", async () => {
+  const app = harness(); app.input("custom-duration", 360); app.radio("sound", "rain2"); app.click("start-button"); await flush();
+  for (let loop = 0; loop < 32; loop++) {
     const current = app.mediaElements.find(media => !media.paused);
     app.elapseWithoutCallbacks(656_000);
     current.currentTime = 656; current.ontimeupdate(); await flush();
@@ -266,7 +266,7 @@ test("録音の雨を60分流し、4秒の等電力クロスフェードで2つ�
     assert.equal(app.mediaElements.filter(media => !media.paused).length, 1);
   }
   assert.equal(app.audioNodes.filter(node => node.kind === "media-source").length, 2);
-  app.advance(300_000); app.advance(500); await flush();
+  app.advance(480_000); app.advance(500); await flush();
   assert.equal(app.byId("complete-view").hidden, false);
   assert.ok(app.mediaElements.every(media => media.paused && !media.src));
   assert.ok(app.audioNodes.every(node => node.disconnected));
@@ -352,7 +352,7 @@ test("中断したAudioContextの終了ベルは取り消し、遅れて鳴ら�
 });
 
 test("設定を検証して保存し、保存不可や壊れたJSONでも開始できる", () => {
-  for (const options of [{ storageBlocked: true }, { saved: "{broken" }, { saved: JSON.stringify({ minutes: 61, sound: "toString", volume: 500, bell: "yes", theme: "bad" }) }]) {
+  for (const options of [{ storageBlocked: true }, { saved: "{broken" }, { saved: JSON.stringify({ minutes: 361, sound: "toString", volume: 500, bell: "yes", theme: "bad" }) }]) {
     const app = harness(options); app.click("start-button");
     assert.equal(app.byId("timer").textContent, "03:00");
   }

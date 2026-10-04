@@ -23,8 +23,8 @@
   <link rel="icon" href="assets/icons/icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=20261004-12">
-  <script src="app.js?v=20261004-12" defer></script>
+  <link rel="stylesheet" href="style.css?v=20261004-13">
+  <script src="app.js?v=20261004-13" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">休む画面へ</a>
@@ -50,9 +50,9 @@
           <label class="duration-choice"><input type="radio" name="duration" value="10"><span>10分</span></label>
         </fieldset>
         <div class="custom-duration">
-          <div class="duration-heading"><label for="custom-duration">休む時間</label><span class="duration-value"><input id="custom-duration" type="number" min="1" max="60" step="1" value="3" inputmode="numeric" aria-describedby="duration-note"><span>分</span></span></div>
-          <label class="sr-only" for="duration-range">休む時間を1〜60分から選ぶ</label><input id="duration-range" type="range" min="1" max="60" step="1" value="3" aria-describedby="duration-note">
-          <p id="duration-note">1〜60分・1分刻み</p>
+          <div class="duration-heading"><label for="custom-duration">休む時間</label><span class="duration-value"><input id="custom-duration" type="number" min="1" max="360" step="1" value="3" inputmode="numeric" aria-describedby="duration-note"><span>分</span></span></div>
+          <label class="sr-only" for="duration-range">休む時間を1〜360分から選ぶ</label><input id="duration-range" type="range" min="1" max="360" step="1" value="3" aria-describedby="duration-note">
+          <p id="duration-note">1〜360分（最長6時間）・1分刻み</p>
         </div>
         <button class="sound-button settings-trigger" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m11 5-6 5H2v4h3l6 5V5Zm4 4a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>音 <span class="sound-separator" aria-hidden="true">·</span> <span class="sound-label">無音</span></span><svg class="chevron" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>

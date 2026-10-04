@@ -4,7 +4,7 @@
   const STORAGE_KEY = "yohaku-settings-v1";
   const MINUTE_MS = 60_000;
   const UPDATE_INTERVAL_MS = 200;
-  const MAX_MINUTES = 60;
+  const MAX_MINUTES = 360;
   const RECORDED_BLEND_SECONDS = 4;
   const AUDIO = { ambientLevel: 0.45, guideLevel: 0.08, bellLevel: 0.1, noiseDuration: 20, noiseBlend: 1, fadeIn: 1.5, guideFadeIn: 0.08, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25, guideTolerance: 0.3 };
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
