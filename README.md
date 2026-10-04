@@ -136,8 +136,8 @@ DOMとWeb Audioの最小スタブを使うロジックテストであり、実�
 - `Tab`・矢印キー・`Space`・`Enter`、設定ダイアログの `Escape` とフォーカス復帰
 - ダークテーマ、reduced motion、VoiceOver／TalkBackの画面読み上げ
 
-この制作環境ではブラウザからのローカルURLへの接続とブラウザバイナリの取得が制限され、実機Safari／Android Chromeの検証は実施できていません。
-実施できたチェックと制約は、[検証記録](VERIFICATION.md)に記載しています。
+2026-10-04に、GitHub Pagesの公開版をPC Chromeで確認しました。1分・3分の実時間での終了、4種類の時間の開始、一時停止・再開、音設定、明暗表示、キーボード操作、アプリ由来のコンソールエラーがないことを確認しています。
+iPhone Safari／Android Chromeの実機、各画面幅での実描画、音の聴感は未確認です。確認範囲とスクリーンショットは、[検証記録](VERIFICATION.md)に記載しています。
 
 ## License
 
