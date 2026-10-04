@@ -290,7 +290,7 @@ test("雨・波は開始後だけ合成し、音量変更と無音への切り�
   app.radio("sound", "waves"); await flush();
   assert.ok(source.stops.length > 0);
   assert.ok(app.audioNodes.some((node) => node.kind === "oscillator" && node.frequency.value === 1 / 11));
-  assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 650));
+  assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 9000));
   app.radio("sound", "silent"); await flush();
   assert.equal(app.byId("volume").disabled, true);
   assert.ok(app.audioNodes.filter((node) => node.kind === "source").every((node) => node.stops.length > 0));
@@ -361,10 +361,9 @@ for (const sound of ["fire", "white", "pink", "tone40"]) test(`${sound}は開始
   assert.equal(JSON.parse(saved).sound, sound);
   const restored = harness({ saved }); assert.equal(restored.byId("volume").disabled, false);
   app.click("start-button"); await flush();
-  const source = app.audioNodes.find((node) => node.kind === (sound === "tone40" ? "oscillator" : "source"));
+  const source = app.audioNodes.find((node) => node.kind === "source");
   assert.equal(source.starts.length, 1);
-  if (sound === "tone40") { assert.equal(source.type, "sine"); assert.equal(source.frequency.value, 40); }
-  else { assert.equal(source.loop, true); assert.equal(source.buffer.numberOfChannels, 2); }
+  assert.equal(source.loop, true); assert.equal(source.buffer.numberOfChannels, 2);
   app.input("volume", 70); await flush();
   assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.315) < 0.00001));
   assert.equal(source.starts.length, 1);
@@ -372,7 +371,7 @@ for (const sound of ["fire", "white", "pink", "tone40"]) test(`${sound}は開始
   assert.ok(app.audioNodes.every((node) => node.disconnected));
   app.click("pause-button"); await flush();
   const replacement = app.audioNodes.filter((node) => node.kind === source.kind).at(-1);
-  if (sound !== "tone40") assert.equal(replacement.buffer, source.buffer);
+  assert.equal(replacement.buffer, source.buffer);
   app.advance(60_000); app.advance(500); await flush();
   assert.equal(app.byId("complete-view").hidden, false);
   assert.ok(app.audioNodes.every((node) => node.disconnected));
@@ -400,16 +399,52 @@ test("白・ピンクの音色を分け、焚き火には不規則な破裂音�
   assert.ok(Math.max(...energies) > Math.min(...energies) * 3);
 });
 
-test("40Hzは純粋な低音を十分なレベルで出力し、説明を表示する", async () => {
+test("波は60秒に6回寄せて引き、泡の音と静かな間を持つ", async () => {
+  const app = harness({ random: seededRandom(19) }); app.radio("sound", "waves"); app.click("start-button"); await flush();
+  const source = app.audioNodes.find(node => node.kind === "source");
+  const buffer = source.buffer, rate = buffer.sampleRate;
+  assert.equal(buffer.duration, 60); assert.equal(source.loop, true);
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    const samples = buffer.getChannelData(channel);
+    const rmsAt = (time) => {
+      let energy = 0;
+      for (let i = Math.round(time * rate); i < Math.round((time + 0.3) * rate); i++) energy += samples[i] ** 2;
+      return Math.sqrt(energy / (rate * 0.3));
+    };
+    for (const [crest, quiet] of [[2, 7.8], [10.7, 18.6], [21.6, 28], [30.7, 39.2], [42, 49], [52, 59.4]]) {
+      assert.ok(rmsAt(crest) > 3 * rmsAt(quiet));
+    }
+    assert.ok(samples.every(sample => Number.isFinite(sample) && Math.abs(sample) <= 1));
+    assert.ok(Math.abs(samples[0] - samples.at(-1)) < 0.15);
+  }
+  app.click("pause-button"); app.advance(500); app.click("pause-button"); await flush();
+  assert.equal(app.audioNodes.filter(node => node.kind === "source").at(-1).buffer, buffer);
+});
+
+test("40Hz変調は聞こえる240Hz搬送音を毎秒40回変調し、停止と説明に対応する", async () => {
   const app = harness(); app.radio("sound", "tone40"); app.click("start-button"); await flush();
-  const sources = app.audioNodes.filter(node => node.kind === "oscillator");
-  assert.equal(sources.length, 1); assert.equal(sources[0].frequency.value, 40); assert.equal(sources[0].type, "sine");
+  const sources = app.audioNodes.filter(node => node.kind === "source");
+  assert.equal(sources.length, 1); assert.equal(sources[0].buffer.duration, 1);
+  const samples = sources[0].buffer.getChannelData(0), rate = sources[0].buffer.sampleRate;
+  const amplitudeAt = (frequency) => {
+    let real = 0, imaginary = 0;
+    for (let i = 0; i < samples.length; i++) {
+      real += samples[i] * Math.cos(2 * Math.PI * frequency * i / rate);
+      imaginary += samples[i] * Math.sin(2 * Math.PI * frequency * i / rate);
+    }
+    return 2 * Math.hypot(real, imaginary) / samples.length;
+  };
+  assert.ok(Math.abs(amplitudeAt(240) - 0.385) < 0.0001);
+  assert.ok(Math.abs(amplitudeAt(200) - 0.1575) < 0.0001);
+  assert.ok(Math.abs(amplitudeAt(280) - 0.1575) < 0.0001);
+  assert.ok(amplitudeAt(40) < 0.0001);
+  assert.ok(samples.every(sample => Number.isFinite(sample) && Math.abs(sample) <= 0.7));
   const texture = sources[0].connections[0];
   const volume = texture.connections[0];
-  assert.ok(Math.abs(texture.gain.value * volume.gain.value - 0.1134) < 0.00001);
+  assert.ok(Math.abs(texture.gain.value * volume.gain.value - 0.1575) < 0.00001);
   app.input("volume", 100); await flush();
-  assert.ok(Math.abs(texture.gain.value * volume.gain.value - 0.324) < 0.00001);
-  assert.match(app.byId("sound-description").textContent, /40Hz/);
+  assert.ok(Math.abs(texture.gain.value * volume.gain.value - 0.45) < 0.00001);
+  assert.match(app.byId("sound-description").textContent, /毎秒40回/);
   for (const sound of ["rain", "waves", "fire"]) {
     app.radio("sound", sound); await flush();
     assert.match(app.byId("sound-description").textContent, /合成音/);
@@ -587,7 +622,7 @@ test("音声準備中に設定を連続変更しても最後の選択だけを�
   app.radio("sound", "waves"); app.input("bell-enabled", true, "change");
   app.audioContexts[0].resolveResume(); await flush();
   assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 1);
-  assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 650));
+  assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 9000));
   assert.equal(app.audioNodes.filter((node) => node.kind === "oscillator").length, 4);
 });
 

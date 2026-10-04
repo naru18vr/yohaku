@@ -8,15 +8,15 @@
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
   const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
-  const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波", fire: "焚き火", white: "ホワイトノイズ", pink: "ピンクノイズ", tone40: "40Hz" };
+  const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波", fire: "焚き火", white: "ホワイトノイズ", pink: "ピンクノイズ", tone40: "40Hz変調" };
   const SOUND_DESCRIPTIONS = {
     rain: "雨を模した合成音です。",
     rain2: "提供された雨音の録音です。",
-    waves: "波を模した合成音です。",
+    waves: "寄せて砕け、泡を残して引いていく波を模した合成音です。",
     fire: "焚き火を模した合成音です。",
     white: "周波数ごとの強さがほぼ均一なノイズです。",
     pink: "低い周波数ほど強くなるノイズです。",
-    tone40: "40Hzの低い連続音です。聞こえにくい場合は低音対応のイヤホン・ヘッドホンでお試しください。",
+    tone40: "聞こえる高さの音に、毎秒40回の強弱をつけた音です。純粋な40Hzの低音とは異なります。",
   };
   const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
@@ -177,13 +177,34 @@
 
     createNoiseBuffer(kind = "pink") {
       const context = this.context;
-      const length = Math.round(context.sampleRate * AUDIO.noiseDuration);
+      const duration = kind === "waves" ? 60 : AUDIO.noiseDuration;
+      const length = Math.round(context.sampleRate * duration);
       const blendLength = Math.round(context.sampleRate * AUDIO.noiseBlend);
       const buffer = context.createBuffer(2, length, context.sampleRate);
+      let waveSurge, waveFoam, waveFilter;
+      if (kind === "waves") {
+        waveSurge = new Float32Array(length + blendLength);
+        waveFoam = new Float32Array(length + blendLength);
+        waveFilter = new Float32Array(length + blendLength);
+        const periods = [8.4, 10.8, 9.4, 11.2, 9.8, 10.4];
+        let wave = 0, start = 0;
+        for (let i = 0; i < waveSurge.length; i++) {
+          const time = i / context.sampleRate;
+          while (time >= start + periods[wave]) { start += periods[wave]; wave = (wave + 1) % periods.length; }
+          const phase = time - start;
+          const attack = 2.1 + wave % 3 * 0.25;
+          const end = Math.min(1, (periods[wave] - phase) / 1.4) ** 2;
+          waveSurge[i] = (phase < attack ? Math.sin(phase / attack * Math.PI / 2) ** 2 : Math.exp(-(phase - attack) / 2.5)) * end;
+          const retreat = Math.max(0, phase - attack);
+          waveFoam[i] = (1 - Math.exp(-retreat / 0.35)) * Math.exp(-retreat / 2.8) * end;
+          waveFilter[i] = 1 - Math.exp(-2 * Math.PI * (900 + 4200 * waveSurge[i] + 1800 * waveFoam[i]) / context.sampleRate);
+        }
+      }
       for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
         const samples = buffer.getChannelData(channel);
         const noise = new Float32Array(length + blendLength);
         let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+        let deep = 0, spray = 0;
         for (let i = -context.sampleRate; i < noise.length; i++) {
           const white = Math.random() * 2 - 1;
           b0 = 0.99886 * b0 + white * 0.0555179;
@@ -192,7 +213,14 @@
           b3 = 0.8665 * b3 + white * 0.3104856;
           b4 = 0.55 * b4 + white * 0.5329522;
           b5 = -0.7616 * b5 - white * 0.016898;
-          if (i >= 0) noise[i] = kind === "white" ? white * 0.24 : Math.max(-1, Math.min(1, (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11));
+          const pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
+          if (kind === "waves") {
+            // 波頭では広い帯域の水しぶき、引き際には遅れて泡の音を残します。
+            const at = Math.max(0, i);
+            deep += 0.02 * (pink - deep);
+            spray += waveFilter[at] * (white * 0.42 - spray);
+            if (i >= 0) noise[i] = Math.max(-1, Math.min(1, deep * (0.24 + waveSurge[i] * 0.9) + spray * (0.05 + waveSurge[i] * 0.65 + waveFoam[i] * 0.4)));
+          } else if (i >= 0) noise[i] = kind === "white" ? white * 0.24 : Math.max(-1, Math.min(1, pink));
           b6 = white * 0.115926;
         }
         if (kind === "fire") {
@@ -230,7 +258,8 @@
       if (sound === "rain2") { this.startRecordedRain(); return; }
       if (["fire", "white", "pink", "tone40"].includes(sound)) { this.startExtraAmbient(sound); return; }
       const context = this.context;
-      if (!this.noiseBuffer) this.noiseBuffer = this.createNoiseBuffer();
+      if (sound === "rain" && !this.noiseBuffer) this.noiseBuffer = this.createNoiseBuffer();
+      if (sound === "waves" && !this.extraBuffers.has(sound)) this.extraBuffers.set(sound, this.createNoiseBuffer(sound));
       const graph = this.createGraph();
       this.ambient = graph;
       graph.sound = sound;
@@ -238,18 +267,18 @@
       const source = context.createBufferSource();
       addNode(source);
       graph.sources.push(source);
-      source.buffer = this.noiseBuffer;
+      source.buffer = sound === "waves" ? this.extraBuffers.get(sound) : this.noiseBuffer;
       source.loop = true;
       const lowpass = addNode(context.createBiquadFilter());
       lowpass.type = "lowpass";
-      lowpass.frequency.value = sound === "rain" ? 3200 : 650;
+      lowpass.frequency.value = sound === "rain" ? 3200 : 9000;
       lowpass.Q.value = 0.5;
       const highpass = addNode(context.createBiquadFilter());
       highpass.type = "highpass";
       highpass.frequency.value = sound === "rain" ? 180 : 60;
       highpass.Q.value = 0.5;
       const texture = addNode(context.createGain());
-      texture.gain.value = sound === "rain" ? 1 : 0.7;
+      texture.gain.value = sound === "rain" ? 1 : 0.9;
       const volume = addNode(context.createGain());
       graph.volume = volume;
       volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
@@ -265,12 +294,26 @@
         graph.sources.push(swell);
         swell.frequency.value = 1 / 11;
         const depth = addNode(context.createGain());
-        depth.gain.value = 0.2;
+        depth.gain.value = 0.05;
         swell.connect(depth).connect(texture.gain);
         swell.start();
       }
       source.onended = () => this.disposeGraph(graph);
       source.start();
+    }
+
+    createTone40Buffer() {
+      const rate = this.context.sampleRate;
+      const buffer = this.context.createBuffer(2, rate, rate);
+      for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+        const samples = buffer.getChannelData(channel);
+        for (let i = 0; i < rate; i++) {
+          const time = i / rate;
+          // 240Hzの搬送音に40Hzの振幅変調。1秒に整数周期を収めて滑らかにループします。
+          samples[i] = 0.7 * Math.sin(2 * Math.PI * 240 * time) * (0.55 + 0.45 * Math.cos(2 * Math.PI * 40 * time));
+        }
+      }
+      return buffer;
     }
 
     startExtraAmbient(sound) {
@@ -279,18 +322,13 @@
       this.ambient = graph;
       graph.sound = sound;
       const addNode = (node) => { graph.nodes.push(node); return node; };
-      const source = addNode(sound === "tone40" ? context.createOscillator() : context.createBufferSource());
+      const source = addNode(context.createBufferSource());
       graph.sources.push(source);
-      if (sound === "tone40") {
-        source.type = "sine";
-        source.frequency.value = 40;
-      } else {
-        if (!this.extraBuffers.has(sound)) this.extraBuffers.set(sound, this.createNoiseBuffer(sound));
-        source.buffer = this.extraBuffers.get(sound);
-        source.loop = true;
-      }
+      if (!this.extraBuffers.has(sound)) this.extraBuffers.set(sound, sound === "tone40" ? this.createTone40Buffer() : this.createNoiseBuffer(sound));
+      source.buffer = this.extraBuffers.get(sound);
+      source.loop = true;
       const texture = addNode(context.createGain());
-      texture.gain.value = sound === "tone40" ? 0.72 : sound === "fire" ? 0.7 : 1;
+      texture.gain.value = sound === "fire" ? 0.7 : 1;
       const volume = addNode(context.createGain());
       graph.volume = volume;
       volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
