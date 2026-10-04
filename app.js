@@ -4,10 +4,10 @@
   const STORAGE_KEY = "yohaku-settings-v1";
   const MINUTE_MS = 60_000;
   const UPDATE_INTERVAL_MS = 200;
-  const AUDIO = { ambientLevel: 0.45, guideLevel: 0.12, bellLevel: 0.1, noiseDuration: 20, noiseBlend: 1, fadeIn: 1.5, guideFadeIn: 0.25, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25, guideTolerance: 0.3 };
+  const AUDIO = { ambientLevel: 0.45, guideLevel: 0.08, bellLevel: 0.1, noiseDuration: 20, noiseBlend: 1, fadeIn: 1.5, guideFadeIn: 0.08, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25, guideTolerance: 0.3 };
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
-  const GUIDE = { lowFrequency: 264, highFrequency: 396, edgeFade: 0.35 };
+  const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
   const SOUND_NAMES = { silent: "無音", rain: "雨", waves: "波" };
   const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
@@ -235,23 +235,21 @@
       const sampleRate = this.context.sampleRate;
       const buffer = this.context.createBuffer(1, sampleRate * BREATH_CYCLE_MS / 1000, sampleRate);
       const samples = buffer.getChannelData(0);
-      const inhale = BREATH.inhale / 1000;
       const exhaleAt = (BREATH.inhale + BREATH.hold) / 1000;
-      const exhale = BREATH.exhale / 1000;
-      let phase = 0;
-      for (let i = 0; i < samples.length; i++) {
-        const time = i / sampleRate;
-        const breathingIn = time < inhale;
-        if (!breathingIn && time < exhaleAt) continue;
-        const elapsed = breathingIn ? time : time - exhaleAt;
-        const duration = breathingIn ? inhale : exhale;
-        const progress = (1 - Math.cos(Math.PI * elapsed / duration)) / 2;
-        const pitch = breathingIn ? progress : 1 - progress;
-        const frequency = GUIDE.lowFrequency + (GUIDE.highFrequency - GUIDE.lowFrequency) * pitch;
-        const edge = Math.min(1, elapsed / GUIDE.edgeFade, (duration - elapsed) / GUIDE.edgeFade);
-        const envelope = (1 - Math.cos(Math.PI * edge)) / 2;
-        samples[i] = Math.sin(phase) * envelope;
-        phase = (phase + 2 * Math.PI * frequency / sampleRate) % (2 * Math.PI);
+      // 音程をうねらせず、吸う・吐くの始まりだけを短い柔らかな音で知らせます。
+      // なだらかな立ち上がりと余韻の後は無音。倍音は先に減衰させます。
+      for (const [at, frequency] of [[0, GUIDE.inhaleFrequency], [exhaleAt, GUIDE.exhaleFrequency]]) {
+        const start = Math.round(at * sampleRate);
+        const length = Math.round(GUIDE.cueDuration * sampleRate);
+        for (let i = 0; i < length; i++) {
+          const elapsed = i / sampleRate;
+          const attack = (1 - Math.cos(Math.PI * Math.min(1, elapsed / GUIDE.attack))) / 2;
+          const release = (1 + Math.cos(Math.PI * elapsed / GUIDE.cueDuration)) / 2;
+          const envelope = attack * release * Math.exp(-2.2 * elapsed);
+          const phase = 2 * Math.PI * frequency * elapsed;
+          const warmth = Math.sin(phase) + 0.12 * Math.exp(-4 * elapsed) * Math.sin(2 * phase);
+          samples[start + i] = warmth * envelope * 0.85;
+        }
       }
       return buffer;
     }

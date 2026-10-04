@@ -560,23 +560,49 @@ test("呼吸ガイドは任意で保存し、古い設定・不正な設定で�
   assert.equal(guideSources(restored).length, 1);
 });
 
-test("音ガイドは4秒上昇・2秒無音・6秒下降。境界は滑らかで円と同じ12秒周期", async () => {
+test("音ガイドは吸う・吐くの始まりだけに短く鳴り、間は無音。急な音量変化がなく円と同じ周期", async () => {
   const app = harness(); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
   const source = guideSources(app)[0], buffer = source.buffer, samples = buffer.getChannelData(0), rate = buffer.sampleRate;
   assert.equal(buffer.duration, 12); assert.equal(source.loop, true); assert.equal(source.offsets[0], 0);
   assert.ok(samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1));
+  assert.ok(samples.subarray(rate * 1.2, rate * 6).every((sample) => sample === 0));
+  assert.ok(samples.subarray(rate * 7.2).every((sample) => sample === 0));
   assert.ok(samples.subarray(rate * 4, rate * 6).every((sample) => sample === 0));
   assert.equal(samples[0], 0); assert.ok(Math.abs(samples.at(-1)) < 0.000001);
+  for (const at of [0, 1.1, 6, 7.1, 12]) {
+    const boundary = Math.round(at * rate);
+    for (let i = Math.max(1, boundary - 2); i < Math.min(samples.length, boundary + 3); i++) {
+      assert.ok(Math.abs(samples[i] - samples[i - 1]) < 0.001, `smooth boundary at ${at}s`);
+    }
+  }
   const frequencyAt = (time) => {
-    const start = Math.round(time * rate), end = start + Math.round(rate * 0.25);
+    const start = Math.round(time * rate), end = start + Math.round(rate * 0.1);
     let crossings = 0;
     for (let i = start + 1; i < end; i++) if (samples[i - 1] <= 0 && samples[i] > 0) crossings++;
-    return crossings * 4;
+    return crossings * 10;
   };
-  assert.ok(frequencyAt(0.5) < frequencyAt(3.25));
-  assert.ok(frequencyAt(6.5) > frequencyAt(11.25));
+  assert.ok(frequencyAt(0.2) > frequencyAt(6.2));
+  assert.ok(Math.abs(frequencyAt(0.2) - frequencyAt(0.7)) <= 10);
+  assert.ok(Math.abs(frequencyAt(6.2) - frequencyAt(6.7)) <= 10);
   app.advance(4000); assert.equal(app.byId("breath-label").textContent, "そのまま");
   app.advance(2000); assert.equal(app.byId("breath-label").textContent, "吐く");
+});
+
+test("10分の雨と音ガイドは途中で作り直さず、終了後に両方の音を解放する", async () => {
+  const app = harness(); app.radio("duration", 10); app.radio("sound", "rain");
+  app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  const sources = app.audioNodes.filter((node) => node.kind === "source");
+  assert.equal(sources.length, 2);
+  assert.equal(app.byId("timer").textContent, "10:00");
+  app.advance(599_000);
+  assert.equal(app.byId("timer").textContent, "00:01");
+  assert.ok(sources.every((source) => !source.disconnected && source.starts.length === 1));
+  assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 2);
+  app.advance(1000);
+  assert.equal(app.byId("complete-view").hidden, false);
+  app.advance(500);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  assert.equal(app.audioContexts[0].state, "suspended");
 });
 
 test("一時停止後の音ガイドは、停止した呼吸の途中から再開して全ノードを解放する", async () => {
