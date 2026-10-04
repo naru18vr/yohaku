@@ -17,6 +17,12 @@
   const breathPattern = () => BREATH_PATTERNS[settings.breathPattern];
   const breathCycleMs = () => { const pattern = breathPattern(); return pattern.inhale + pattern.hold + pattern.exhale; };
   const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
+  const GUIDE_TONES = {
+    soft: "やわらかな電子音。吸い始めに少し高く、吐き始めに少し低く鳴ります。",
+    low: "温かな低めの音。吸い始めと吐き始めで高さを変えます。",
+    bell: "鈴を模した澄んだ音。吸い始めと吐き始めで高さを変えます。",
+    breath: "息を模した短いノイズ。吸う時は明るく、吐く時は柔らかく。声は含みません。",
+  };
   const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波", fire: "焚き火", white: "ホワイトノイズ", pink: "ピンクノイズ", tone40: "40Hz変調" };
   const SOUND_DESCRIPTIONS = {
     rain: "雨を模した合成音です。",
@@ -27,7 +33,7 @@
     pink: "低い周波数ほど強くなるノイズです。",
     tone40: "聞こえる高さの音に、毎秒40回の強弱をつけた音です。純粋な40Hzの低音とは異なります。",
   };
-  const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, breathPattern: "original", bell: false, screenOn: false, theme: "auto" };
+  const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, guideTone: "soft", breathPattern: "original", bell: false, screenOn: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
   const views = { home: byId("home-view"), session: byId("session-view"), complete: byId("complete-view") };
@@ -57,6 +63,7 @@
         sound: Object.hasOwn(SOUND_NAMES, saved.sound) ? saved.sound : defaults.sound,
         volume: Number.isFinite(saved.volume) ? Math.round(Math.min(100, Math.max(0, saved.volume))) : defaults.volume,
         guide: typeof saved.guide === "boolean" ? saved.guide : defaults.guide,
+        guideTone: Object.hasOwn(GUIDE_TONES, saved.guideTone) ? saved.guideTone : defaults.guideTone,
         breathPattern: Object.hasOwn(BREATH_PATTERNS, saved.breathPattern) ? saved.breathPattern : defaults.breathPattern,
         bell: typeof saved.bell === "boolean" ? saved.bell : defaults.bell,
         screenOn: typeof saved.screenOn === "boolean" ? saved.screenOn : defaults.screenOn,
@@ -540,17 +547,40 @@
       const exhaleAt = (pattern.inhale + pattern.hold) / 1000;
       // 音程をうねらせず、吸う・吐くの始まりだけを短い柔らかな音で知らせます。
       // なだらかな立ち上がりと余韻の後は無音。倍音は先に減衰させます。
-      for (const [at, frequency] of [[0, GUIDE.inhaleFrequency], [exhaleAt, GUIDE.exhaleFrequency]]) {
+      for (const [at, frequency, inhaling] of [[0, GUIDE.inhaleFrequency, true], [exhaleAt, GUIDE.exhaleFrequency, false]]) {
         const start = Math.round(at * sampleRate);
         const length = Math.round(GUIDE.cueDuration * sampleRate);
+        let filtered = 0, low = 0;
+        const noiseAlpha = 1 - Math.exp(-2 * Math.PI * (inhaling ? 1600 : 550) / sampleRate);
+        const lowAlpha = 1 - Math.exp(-2 * Math.PI * 120 / sampleRate);
         for (let i = 0; i < length; i++) {
           const elapsed = i / sampleRate;
           const attack = (1 - Math.cos(Math.PI * Math.min(1, elapsed / GUIDE.attack))) / 2;
           const release = (1 + Math.cos(Math.PI * elapsed / GUIDE.cueDuration)) / 2;
           const envelope = attack * release * Math.exp(-2.2 * elapsed);
-          const phase = 2 * Math.PI * frequency * elapsed;
-          const warmth = Math.sin(phase) + 0.12 * Math.exp(-4 * elapsed) * Math.sin(2 * phase);
+          const phase = 2 * Math.PI * frequency * (settings.guideTone === "low" ? 0.5 : 1) * elapsed;
+          let warmth = Math.sin(phase) + 0.12 * Math.exp(-4 * elapsed) * Math.sin(2 * phase);
+          if (settings.guideTone === "bell") {
+            warmth = 0.7 * Math.sin(phase) + 0.2 * Math.exp(-4 * elapsed) * Math.sin(2.76 * phase) + 0.1 * Math.exp(-6 * elapsed) * Math.sin(4.07 * phase);
+          } else if (settings.guideTone === "breath") {
+            const noise = Math.random() * 2 - 1;
+            filtered += noiseAlpha * (noise - filtered);
+            low += lowAlpha * (noise - low);
+            warmth = inhaling ? (filtered - low) * 0.8 : filtered;
+          }
           samples[start + i] = warmth * envelope * 0.85;
+        }
+        if (settings.guideTone === "breath") {
+          // フィルターで小さくなるノイズを補正し、低い吐く音も聞き取りやすくします。
+          let sum = 0;
+          for (let i = 0; i < length; i++) {
+            const value = samples[start + i]; sum += value * value;
+          }
+          if (sum > 0) {
+            const scale = 0.2 / Math.sqrt(sum / length);
+            // 単一の大きな瞬間値で全体を小さくせず、滑らかにピークを抑えます。
+            for (let i = 0; i < length; i++) samples[start + i] = 0.8 * Math.tanh(samples[start + i] * scale / 0.8);
+          }
         }
       }
       return buffer;
@@ -563,12 +593,13 @@
       if (this.guide) {
         const playingPhase = (this.context.currentTime - this.guide.startedAt + this.guide.offset) % cycle;
         const difference = Math.abs(playingPhase - elapsed % cycle);
-        if (this.guide.pattern === settings.breathPattern && Math.min(difference, cycle - difference) <= AUDIO.guideTolerance) return;
+        if (this.guide.pattern === settings.breathPattern && this.guide.tone === settings.guideTone && Math.min(difference, cycle - difference) <= AUDIO.guideTolerance) return;
         this.stopGuide();
       }
-      if (!this.guideBuffer || this.guideBufferPattern !== settings.breathPattern) {
+      const bufferKey = `${settings.breathPattern}:${settings.guideTone}`;
+      if (!this.guideBuffer || this.guideBufferKey !== bufferKey) {
         this.guideBuffer = this.createGuideBuffer();
-        this.guideBufferPattern = settings.breathPattern;
+        this.guideBufferKey = bufferKey;
       }
       const left = getRemaining();
       if (left === 0) { update(); return; }
@@ -576,6 +607,7 @@
       const graph = this.createGraph();
       this.guide = graph;
       graph.pattern = settings.breathPattern;
+      graph.tone = settings.guideTone;
       const addNode = (node) => { graph.nodes.push(node); return node; };
       const source = addNode(context.createBufferSource());
       graph.sources.push(source);
@@ -717,6 +749,9 @@
     byId("volume").setAttribute("aria-valuetext", `${settings.volume}%`);
     byId("volume").disabled = settings.sound === "silent" && !settings.guide && !settings.bell;
     byId("guide-enabled").checked = settings.guide;
+    document.querySelectorAll('input[name="guide-tone"]').forEach(input => { input.checked = input.value === settings.guideTone; });
+    byId("guide-tone-note").textContent = GUIDE_TONES[settings.guideTone];
+    byId("guide-note").textContent = `${GUIDE_TONES[settings.guideTone]} 間は静かに。あなたのペースで。`;
     document.querySelectorAll('input[name="breath-pattern"]').forEach(input => { input.checked = input.value === settings.breathPattern; });
     byId("breath-pattern-note").textContent = breathPattern().description;
     byId("breath-description").textContent = `円は${breathPattern().description}の目安を示します。合わせずに、自然な呼吸で休んでも大丈夫です。`;
@@ -986,6 +1021,13 @@
     syncSettings();
     if (state === "running") { beginAnimation(); void audio.play(); }
     else if (state === "paused") renderBreath();
+  }));
+  document.querySelectorAll('input[name="guide-tone"]').forEach(input => input.addEventListener("change", () => {
+    if (!Object.hasOwn(GUIDE_TONES, input.value)) return;
+    settings.guideTone = input.value;
+    saveSettings();
+    syncSettings();
+    if (state === "running" && settings.guide) void audio.play();
   }));
   document.querySelectorAll('input[name="theme"]').forEach((input) => input.addEventListener("change", () => {
     settings.theme = input.value;

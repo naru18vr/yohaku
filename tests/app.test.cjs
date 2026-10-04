@@ -1136,3 +1136,83 @@ test("音声準備中にリズムを変更した場合も、最後の選択だ�
   assert.equal(guideSources(app).length, 1); assert.equal(guideSources(app)[0].buffer.duration, 8);
   app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every(node => node.disconnected));
 });
+
+for (const tone of ["soft", "low", "bell", "breath"]) test(`${tone}の音色を全4リズムで再生し、合図・無音・停止・再開を維持する`, async () => {
+  for (const [pattern, cycle, exhaleAt] of [["original", 12, 6], ["gentle", 10, 4], ["equal", 8, 4], ["slow", 10, 5]]) {
+    const app = harness(); app.radio("guide-tone", tone); app.radio("breath-pattern", pattern);
+    assert.equal(app.audioContexts.length, 0);
+    app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+    const source = guideSources(app)[0], samples = source.buffer.getChannelData(0), rate = source.buffer.sampleRate;
+    assert.equal(source.buffer.duration, cycle);
+    assert.ok(samples.every(value => Number.isFinite(value) && Math.abs(value) <= 1));
+    const energy = (a, b) => samples.slice(a * rate, b * rate).reduce((sum, value) => sum + value * value, 0);
+    assert.ok(energy(0, 1.1) > 1); assert.ok(energy(exhaleAt, exhaleAt + 1.1) > 1);
+    assert.equal(energy(1.2, exhaleAt), 0); assert.equal(energy(exhaleAt + 1.2, cycle), 0);
+    for (const at of [0, 1.1, exhaleAt, exhaleAt + 1.1, cycle]) {
+      const boundary = Math.round(at * rate);
+      for (let i = Math.max(1, boundary - 2); i < Math.min(samples.length, boundary + 3); i++) assert.ok(Math.abs(samples[i] - samples[i - 1]) < 0.001);
+    }
+    app.advance(2500); app.click("pause-button"); app.advance(500); assert.ok(source.disconnected);
+    app.click("pause-button"); await flush(); assert.equal(guideSources(app).at(-1).offsets[0], 2.5);
+    app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every(node => node.disconnected));
+  }
+});
+
+test("音色の切り替えはガイドだけを更新し、環境音・位相・終了時刻を維持する", async () => {
+  const app = harness(); app.radio("sound", "rain"); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  const rain = app.audioNodes.find(node => node.kind === "source" && node.buffer.numberOfChannels === 2), first = guideSources(app)[0];
+  app.advance(6500); app.radio("guide-tone", "bell"); await flush(); app.advance(500);
+  const next = guideSources(app).at(-1); assert.ok(first.disconnected); assert.ok(!rain.disconnected);
+  assert.notEqual(first.buffer, next.buffer); assert.equal(next.offsets[0], 6.5); assert.equal(next.stops.at(-1), 180);
+  app.input("guide-enabled", false, "change"); await flush(); app.advance(500);
+  const count = guideSources(app).length; app.radio("guide-tone", "breath"); await flush(); assert.equal(guideSources(app).length, count);
+  app.input("guide-enabled", true, "change"); await flush(); assert.notEqual(guideSources(app).at(-1).buffer, next.buffer);
+  app.click("stop-button"); app.advance(500);
+});
+
+test("音色を保存・復元し、不正値は従来の音に戻す。停止中の変更は自動再生しない", async () => {
+  const app = harness(); app.radio("guide-tone", "low"); const saved = app.storage.get("yohaku-settings-v1");
+  assert.equal(JSON.parse(saved).guideTone, "low"); const restored = harness({ saved });
+  assert.match(restored.byId("guide-tone-note").textContent, /低め/);
+  for (const guideTone of [undefined, null, "toString", "missing", 2]) {
+    const invalid = harness({ saved: JSON.stringify({ guideTone }) }); assert.match(invalid.byId("guide-tone-note").textContent, /電子音/);
+  }
+  app.input("guide-enabled", true, "change"); app.click("start-button"); await flush(); app.click("pause-button"); app.advance(500);
+  app.radio("guide-tone", "breath"); await flush(); assert.equal(guideSources(app).length, 1);
+  app.click("pause-button"); await flush(); assert.equal(guideSources(app).length, 2);
+  app.click("stop-button"); app.advance(500);
+});
+
+test("音声準備中に音色を変更した場合も最後の選択だけを生成する", async () => {
+  const app = harness({ pendingResume: true }); app.input("guide-enabled", true, "change"); app.click("start-button");
+  app.radio("guide-tone", "bell"); app.radio("guide-tone", "low"); app.audioContexts[0].resolveResume(); await flush();
+  assert.equal(guideSources(app).length, 1); assert.match(app.byId("guide-tone-note").textContent, /低め/);
+  app.click("stop-button"); app.advance(500);
+});
+
+test("4音色の波形を区別し、低音は従来の半分の高さで鳴る", async () => {
+  const waves = [];
+  for (const tone of ["soft", "low", "bell", "breath"]) {
+    const app = harness(); app.radio("guide-tone", tone); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+    waves.push(guideSources(app)[0].buffer.getChannelData(0).slice(1600, 5600)); app.click("stop-button"); app.advance(500);
+  }
+  const crossings = samples => samples.reduce((sum, value, i) => sum + (i > 0 && samples[i - 1] <= 0 && value > 0 ? 1 : 0), 0);
+  assert.ok(Math.abs(crossings(waves[0]) / crossings(waves[1]) - 2) < 0.05);
+  for (let a = 0; a < waves.length; a++) for (let b = a + 1; b < waves.length; b++) {
+    const difference = waves[a].reduce((sum, value, i) => sum + (value - waves[b][i]) ** 2, 0) / waves[a].length;
+    assert.ok(difference > 0.001);
+  }
+});
+
+test("48kHzでも息の合図の音量を補正し、吸う音・吐く音のピークに余裕を保つ", async () => {
+  let seed = 19;
+  const app = harness({ sampleRate: 48000, random: () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32; } });
+  app.radio("guide-tone", "breath"); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  const samples = guideSources(app)[0].buffer.getChannelData(0);
+  for (const start of [0, 6 * 48000]) {
+    const cue = samples.slice(start, start + Math.round(1.1 * 48000));
+    const rms = Math.sqrt(cue.reduce((sum, value) => sum + value * value, 0) / cue.length);
+    assert.ok(rms >= 0.13 && rms <= 0.2, `cue RMS ${rms}`); assert.ok(cue.every(value => Math.abs(value) <= 0.801));
+  }
+  app.click("stop-button"); app.advance(500);
+});
