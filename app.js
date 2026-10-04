@@ -8,7 +8,7 @@
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
   const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
-  const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨音2", waves: "波" };
+  const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波" };
   const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
@@ -245,6 +245,7 @@
       const graph = this.createGraph();
       this.ambient = graph;
       graph.sound = "rain2";
+      graph.volumeScale = 2;
       // 録音はストリーミングし、長い音源全体をAudioBufferへ展開しません。
       const media = new window.Audio("assets/audio/rain2.mp3");
       graph.media = media;
@@ -260,7 +261,7 @@
       graph.envelope = envelope;
       graph.startedAt = context.currentTime;
       graph.fadeIn = AUDIO.fadeIn;
-      volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
+      volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel * graph.volumeScale;
       envelope.gain.setValueAtTime(0, graph.startedAt);
       envelope.gain.linearRampToValueAtTime(1, graph.startedAt + graph.fadeIn);
       source.connect(volume).connect(envelope).connect(context.destination);
@@ -343,7 +344,7 @@
     setVolume() {
       if (!this.context) return;
       const now = this.context.currentTime;
-      if (this.ambient) this.ambient.volume.gain.setTargetAtTime(settings.volume / 100 * AUDIO.ambientLevel, now, 0.08);
+      if (this.ambient) this.ambient.volume.gain.setTargetAtTime(settings.volume / 100 * AUDIO.ambientLevel * (this.ambient.volumeScale ?? 1), now, 0.08);
       if (this.guide) this.guide.volume.gain.setTargetAtTime(settings.volume / 100 * AUDIO.guideLevel, now, 0.08);
       if (this.bell) this.bell.master.gain.setTargetAtTime(settings.volume / 100 * AUDIO.bellLevel, now, 0.08);
     }

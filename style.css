@@ -129,6 +129,8 @@ body:has(dialog[open]) { overflow: hidden; }
 .setting-group { margin: 24px 0; }
 .setting-group legend, .volume-heading label { font-size: 15px; margin-bottom: 11px; }
 .segmented-options { display: flex; gap: 6px; }
+.sound-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sound-options .segment-choice span { min-height: 54px; text-align: center; }
 .segment-choice { flex: 1; }
 .segment-choice span { display: grid; place-items: center; width: 100%; min-height: 46px; border: 1px solid var(--line); border-radius: inherit; color: var(--muted); padding: 8px 10px; font-size: 14px; }
 .segment-choice input:checked + span { color: var(--text); background: var(--selected); border-color: var(--accent); text-decoration: underline; text-underline-offset: 4px; }

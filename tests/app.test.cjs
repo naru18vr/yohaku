@@ -296,7 +296,7 @@ test("雨・波は開始後だけ合成し、音量変更と無音への切り�
   assert.ok(app.audioNodes.filter((node) => node.kind === "source").every((node) => node.stops.length > 0));
 });
 
-test("雨音2は開始後だけ録音を読み込み、音量変更・停止・再開に対応する", async () => {
+test("雨 fugisako verは開始後だけ録音を読み込み、音量変更・停止・再開に対応する", async () => {
   const app = harness(); app.radio("sound", "rain2");
   assert.equal(app.mediaElements.length, 0);
   assert.equal(JSON.parse(app.storage.get("yohaku-settings-v1")).sound, "rain2");
@@ -304,10 +304,11 @@ test("雨音2は開始後だけ録音を読み込み、音量変更・停止・�
   const media = app.mediaElements[0];
   assert.equal(media.src, "assets/audio/rain2.mp3");
   assert.equal(media.loop, true); assert.equal(media.paused, false);
+  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.315) < 0.00001));
   assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 0);
   app.input("volume", 70); await flush();
   assert.equal(app.mediaElements.length, 1);
-  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.315) < 0.00001));
+  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.63) < 0.00001));
   app.click("pause-button"); app.advance(500); await flush();
   assert.equal(media.paused, true); assert.equal(media.src, "");
   assert.ok(app.audioNodes.every((node) => node.disconnected));
@@ -318,7 +319,7 @@ test("雨音2は開始後だけ録音を読み込み、音量変更・停止・�
   assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 3200));
 });
 
-test("雨音2の読み込み待ち中に終了しても、遅れて再生しない", async () => {
+test("雨 fugisako verの読み込み待ち中に終了しても、遅れて再生しない", async () => {
   const app = harness({ pendingMedia: true }); app.radio("sound", "rain2");
   app.click("start-button"); await flush();
   const media = app.mediaElements[0];
@@ -328,7 +329,7 @@ test("雨音2の読み込み待ち中に終了しても、遅れて再生しな�
   assert.ok(app.audioNodes.every((node) => node.disconnected));
 });
 
-test("雨音2の読込・再生エラーでもタイマーを継続し音を解放する", async () => {
+test("雨 fugisako verの読込・再生エラーでもタイマーを継続し音を解放する", async () => {
   for (const options of [{ mediaFailure: true }, { audioFaults: { createAt: 1 } }, {}]) {
     const app = harness(options); app.radio("duration", 1); app.radio("sound", "rain2");
     app.click("start-button"); await flush();
@@ -340,7 +341,7 @@ test("雨音2の読込・再生エラーでもタイマーを継続し音を解�
   }
 });
 
-test("雨音2を音量0で開始しても読込まず、終了時に録音を解放する", async () => {
+test("雨 fugisako verを音量0で開始しても読込まず、終了時に録音を解放する", async () => {
   const app = harness(); app.radio("duration", 1); app.radio("sound", "rain2"); app.input("volume", 0);
   app.click("start-button"); await flush(); assert.equal(app.mediaElements.length, 0);
   app.input("volume", 35); await flush();
