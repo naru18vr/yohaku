@@ -90,7 +90,8 @@ yohaku/
 │       ├── icon-192.png
 │       └── icon-512.png
 ├── docs/
-│   └── yohaku-desktop-1791075960098.jpg
+│   ├── yohaku-desktop-1791075960098.jpg
+│   └── yohaku-responsive-1791079897949.jpg
 └── tests/
     ├── app.test.cjs
     └── responsive.html
@@ -148,8 +149,8 @@ HTTPで起動した後、[表示確認ページ](tests/responsive.html)で320・
 - `Tab`・矢印キー・`Space`・`Enter`、設定ダイアログの `Escape` とフォーカス復帰
 - ダークテーマ、reduced motion、VoiceOver／TalkBackの画面読み上げ
 
-2026-10-04に、GitHub Pagesの公開版をPC Chromeで確認しました。1分・3分の実時間での終了、4種類の時間の開始、一時停止・再開、音設定、明暗表示、キーボード操作、アプリ由来のコンソールエラーがないことを確認しています。
-iPhone Safari／Android Chromeの実機、各画面幅での実描画、音の聴感は未確認です。確認範囲とスクリーンショットは、[検証記録](VERIFICATION.md)に記載しています。
+2026-10-04に、GitHub Pagesの公開版をPC Chromeで確認しました。1分・3分の実時間での終了、4種類の時間の開始、一時停止・再開、音設定、明暗表示、キーボード操作、アプリ由来のコンソールエラーがないことを確認しています。再レビュー後は、7種類のフレームサイズでホーム・休息・終了・設定画面を操作し、横方向のはみ出しや操作ボタンの位置も確認しました。
+iPhone Safari／Android Chromeの実機、VoiceOver／TalkBack、音の聴感は未確認です。フレームによる描画確認は実機検証とは区別しています。確認範囲とスクリーンショットは、[検証記録](VERIFICATION.md)に記載しています。
 
 ## License
 
