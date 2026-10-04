@@ -78,7 +78,7 @@ function harness(options = {}) {
   };
   const node = (kind, context) => {
     if (audioNodes.length === faults.createAt) throw new Error("node failed");
-    const result = { kind, context, gain: param(), frequency: param(), Q: param(), connections: [], starts: [], stops: [], connect(target) { if (faults.connect) throw new Error("connect failed"); this.connections.push(target); return target; }, disconnect() { this.disconnected = true; }, start(at = context.currentTime) { if (faults.startKind === kind) throw new Error("start failed"); this.starts.push(at); }, stop(at = context.currentTime) { if (faults.stop) throw new Error("stop failed"); this.stops.push(at); } };
+    const result = { kind, context, gain: param(), frequency: param(), Q: param(), connections: [], starts: [], offsets: [], stops: [], connect(target) { if (faults.connect) throw new Error("connect failed"); this.connections.push(target); return target; }, disconnect() { this.disconnected = true; }, start(at = context.currentTime, offset = 0) { if (faults.startKind === kind) throw new Error("start failed"); this.starts.push(at); this.offsets.push(offset); }, stop(at = context.currentTime) { if (faults.stop) throw new Error("stop failed"); this.stops.push(at); } };
     audioNodes.push(result);
     return result;
   };
@@ -87,7 +87,7 @@ function harness(options = {}) {
       if (options.audioFailure === "construct") throw new Error("unavailable");
       this._state = options.pendingResume ? "suspended" : "running";
       this._elapsed = 0; this._changedAt = now;
-      this.sampleRate = 8000; this.destination = {}; this.listeners = {}; this.suspendCalls = 0; audioContexts.push(this);
+      this.sampleRate = options.sampleRate || 8000; this.destination = {}; this.listeners = {}; this.suspendCalls = 0; audioContexts.push(this);
     }
     get state() { return this._state; }
     set state(value) { this._elapsed = this.currentTime; this._changedAt = now; this._state = value; }
@@ -105,7 +105,7 @@ function harness(options = {}) {
       this.changeState("running"); return Promise.resolve();
     }
     suspend() { this.suspendCalls++; if (options.audioFailure === "suspend") return Promise.reject(new Error("suspend failed")); this.changeState("suspended"); return Promise.resolve(); }
-    createBuffer(channels, length) { const data = Array.from({ length: channels }, () => new Float32Array(length)); return { numberOfChannels: channels, getChannelData: (channel) => data[channel] }; }
+    createBuffer(channels, length, sampleRate) { const data = Array.from({ length: channels }, () => new Float32Array(length)); return { numberOfChannels: channels, sampleRate, duration: length / sampleRate, length, getChannelData: (channel) => data[channel] }; }
     createBufferSource() { return node("source", this); }
     createBiquadFilter() { return node("filter", this); }
     createGain() { return node("gain", this); }
@@ -129,9 +129,10 @@ function harness(options = {}) {
     }
   };
   class ClockDate extends Date { static now() { return now + wallClockOffset; } }
-  vm.runInNewContext(script, { window, document, localStorage, Date: ClockDate, console });
+  const math = options.random ? Object.assign(Object.create(Math), { random: options.random }) : Math;
+  vm.runInNewContext(script, { window, document, localStorage, Date: ClockDate, Math: math, console });
   return {
-    byId, storage, audioContexts, audioNodes, timers, frames, document, faults,
+    byId, storage, audioContexts, audioNodes, timers, frames, document, faults, endAudio,
     click(id) { byId(id).dispatch("click"); },
     openSettings() { const button = selectAll(".settings-trigger").find((element) => !element.closest("[hidden]")); button.dispatch("click"); return button; },
     radio(name, value) { const group = selectAll(`input[name="${name}"]`); group.forEach((element) => { element.checked = element.value === String(value); }); group.find((element) => element.checked).dispatch("change"); },
@@ -159,6 +160,7 @@ test("初回は3分・無音・ベルOFF。音を自動再生しない", () => {
   const app = harness();
   assert.equal(app.byId("start-label").textContent, "3分休む");
   assert.equal(app.byId("bell-enabled").checked, false);
+  assert.equal(app.byId("guide-enabled").checked, false);
   assert.equal(app.audioContexts.length, 0);
   app.click("start-button");
   assert.equal(app.byId("session-view").hidden, false);
@@ -269,7 +271,7 @@ test("雨・波は開始後だけ合成し、音量変更と無音への切り�
   assert.equal(source.starts.length, 1);
   const samples = source.buffer.getChannelData(0);
   assert.ok(samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1));
-  assert.equal(samples[0], samples.at(-1));
+  assert.ok(samples.length >= source.buffer.sampleRate * 10);
   assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 3200));
   app.input("volume", 70);
   assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.315) < 0.00001));
@@ -503,4 +505,167 @@ test("webkitAudioContextにも対応し、音声APIがなくても無音で終�
   assert.equal(unavailable.byId("audio-notice").hidden, false);
   assert.equal(unavailable.audioContexts.length, 0);
   unavailable.advance(180_000); assert.equal(unavailable.byId("complete-view").hidden, false);
+});
+
+function seededRandom(seed) {
+  let value = seed;
+  return () => { value = (Math.imul(value, 1664525) + 1013904223) >>> 0; return value / 4294967296; };
+}
+
+const guideSources = (app) => app.audioNodes.filter((node) => node.kind === "source" && node.buffer?.numberOfChannels === 1);
+
+function differenceEnergy(samples, start, count) {
+  let sum = 0;
+  for (let i = 0; i < count; i++) {
+    const at = (start + i + samples.length) % samples.length;
+    const difference = samples[at] - samples[(at + samples.length - 1) % samples.length];
+    sum += difference * difference;
+  }
+  return sum / count;
+}
+
+test("環境音のループ境界でノイズの密度が落ちず、画面更新なしでも同じ音源が続く", async () => {
+  const app = harness({ random: seededRandom(18) }); app.radio("sound", "rain"); app.click("start-button"); await flush();
+  const source = app.audioNodes.find((node) => node.kind === "source");
+  const buffer = source.buffer;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    const samples = buffer.getChannelData(channel);
+    const count = Math.round(buffer.sampleRate * 0.04);
+    const reference = differenceEnergy(samples, buffer.sampleRate * 2, buffer.sampleRate * 16);
+    const seam = differenceEnergy(samples, -count / 2, count);
+    assert.ok(seam / reference > 0.65 && seam / reference < 1.5, `channel ${channel}: ${seam / reference}`);
+    assert.ok(samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1));
+  }
+  app.visibility(true); app.elapseWithoutCallbacks(75_000);
+  assert.equal(source.starts.length, 1); assert.equal(source.stops.length, 0);
+  app.visibility(false);
+  assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 1);
+  assert.equal(app.byId("timer").textContent, "01:45");
+});
+
+test("呼吸ガイドは任意で保存し、古い設定・不正な設定ではOFF。開始前には鳴らない", async () => {
+  for (const guide of [undefined, "yes", 1]) {
+    const app = harness({ saved: JSON.stringify({ guide }) });
+    assert.equal(app.byId("guide-enabled").checked, false);
+  }
+  const app = harness(); app.input("guide-enabled", true, "change");
+  assert.equal(app.byId("volume").disabled, false);
+  assert.equal(app.audioContexts.length, 0);
+  const saved = app.storage.get("yohaku-settings-v1");
+  assert.equal(JSON.parse(saved).guide, true);
+  const restored = harness({ saved });
+  assert.equal(restored.byId("guide-enabled").checked, true);
+  assert.equal(restored.audioContexts.length, 0);
+  restored.click("start-button"); await flush();
+  assert.equal(guideSources(restored).length, 1);
+});
+
+test("音ガイドは4秒上昇・2秒無音・6秒下降。境界は滑らかで円と同じ12秒周期", async () => {
+  const app = harness(); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  const source = guideSources(app)[0], buffer = source.buffer, samples = buffer.getChannelData(0), rate = buffer.sampleRate;
+  assert.equal(buffer.duration, 12); assert.equal(source.loop, true); assert.equal(source.offsets[0], 0);
+  assert.ok(samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1));
+  assert.ok(samples.subarray(rate * 4, rate * 6).every((sample) => sample === 0));
+  assert.equal(samples[0], 0); assert.ok(Math.abs(samples.at(-1)) < 0.000001);
+  const frequencyAt = (time) => {
+    const start = Math.round(time * rate), end = start + Math.round(rate * 0.25);
+    let crossings = 0;
+    for (let i = start + 1; i < end; i++) if (samples[i - 1] <= 0 && samples[i] > 0) crossings++;
+    return crossings * 4;
+  };
+  assert.ok(frequencyAt(0.5) < frequencyAt(3.25));
+  assert.ok(frequencyAt(6.5) > frequencyAt(11.25));
+  app.advance(4000); assert.equal(app.byId("breath-label").textContent, "そのまま");
+  app.advance(2000); assert.equal(app.byId("breath-label").textContent, "吐く");
+});
+
+test("一時停止後の音ガイドは、停止した呼吸の途中から再開して全ノードを解放する", async () => {
+  const app = harness(); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  app.advance(7000); app.click("pause-button"); app.advance(500);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  assert.equal(app.audioContexts[0].state, "suspended");
+  app.elapseWithoutCallbacks(40_000); app.click("pause-button"); await flush();
+  const source = guideSources(app).at(-1);
+  assert.equal(source.offsets[0], 7);
+  assert.equal(source.stops[0] - source.starts[0], 173);
+  assert.equal(app.byId("breath-label").textContent, "吐く");
+  app.pagehide(); assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("呼吸ガイドの切り替え・音量・ベル変更で環境音とガイドを不要に再開始しない", async () => {
+  const app = harness(); app.radio("sound", "rain"); app.click("start-button"); await flush();
+  const rain = app.audioNodes.find((node) => node.kind === "source");
+  app.advance(8500); app.input("guide-enabled", true, "change"); await flush();
+  const guide = guideSources(app)[0]; assert.equal(guide.offsets[0], 8.5);
+  app.input("volume", 60); app.input("bell-enabled", true, "change"); await flush();
+  app.input("bell-enabled", false, "change"); await flush();
+  assert.equal(guideSources(app).length, 1); assert.equal(rain.stops.length, 0);
+  assert.ok(!guide.disconnected);
+  app.input("guide-enabled", false, "change"); await flush(); app.advance(500);
+  assert.ok(guide.disconnected); assert.ok(!rain.disconnected); assert.equal(rain.stops.length, 0);
+});
+
+test("音量0ではガイドも無音になり、音量を戻すと現在の呼吸の位相から再開する", async () => {
+  const app = harness(); app.input("guide-enabled", true, "change"); app.input("volume", 0); app.click("start-button"); await flush();
+  assert.equal(app.audioContexts.length, 0);
+  app.advance(6500); app.input("volume", 35); await flush();
+  assert.equal(guideSources(app)[0].offsets[0], 6.5);
+  app.input("volume", 0); await flush(); app.advance(500);
+  assert.ok(app.audioNodes.every((node) => node.disconnected)); assert.equal(app.audioContexts[0].state, "suspended");
+  app.advance(2000); app.input("volume", 35); await flush();
+  assert.equal(guideSources(app).at(-1).offsets[0], 9);
+});
+
+test("音声中断とイベントのない音声時計停止から復帰した際も、ガイドの位相を補正する", async () => {
+  const app = harness(); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  const context = app.audioContexts[0]; app.advance(2000); context.changeState("interrupted");
+  assert.ok(guideSources(app)[0].disconnected);
+  app.advance(30_000); context.changeState("running");
+  assert.equal(guideSources(app).at(-1).offsets[0], 8);
+  context.pauseAudioClock(); app.elapseWithoutCallbacks(5000); app.visibility(true); app.visibility(false);
+  const replacement = guideSources(app).at(-1);
+  assert.equal(replacement.offsets[0], 1);
+  assert.equal(guideSources(app).length, 3);
+  context.resumeAudioClock(); app.advance(500);
+  assert.ok(guideSources(app).slice(0, -1).every((node) => node.disconnected));
+});
+
+test("画面の更新が止まっても音声時計でガイドを終了し、終了処理が予約を延長しない", async () => {
+  const app = harness(); app.radio("duration", 1); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  const source = guideSources(app)[0]; assert.equal(source.stops[0], 60);
+  app.visibility(true); app.elapseWithoutCallbacks(60_000); app.endAudio();
+  assert.ok(source.disconnected); assert.equal(app.byId("complete-view").hidden, true);
+  app.visibility(false); assert.equal(app.byId("complete-view").hidden, false);
+  assert.equal(app.audioContexts[0].state, "suspended");
+  const immediate = harness(); immediate.radio("duration", 1); immediate.input("guide-enabled", true, "change"); immediate.click("start-button"); await flush();
+  immediate.advance(60_000);
+  assert.ok(guideSources(immediate)[0].stops.at(-1) <= 60);
+  assert.ok(immediate.audioNodes.every((node) => node.disconnected));
+});
+
+test("ガイドの生成失敗・開始待ちの取り消しでも、音を残さずタイマーを継続する", async () => {
+  for (const audioFaults of [{ createAt: 2 }, { connect: true }, { startKind: "source" }]) {
+    const app = harness({ audioFaults }); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+    assert.equal(app.byId("audio-notice").hidden, false); assert.ok(app.audioNodes.every((node) => node.disconnected));
+    app.jump(180_000); assert.equal(app.byId("complete-view").hidden, false);
+  }
+  const pending = harness({ pendingResume: true }); pending.input("guide-enabled", true, "change"); pending.click("start-button");
+  pending.input("guide-enabled", false, "change"); pending.audioContexts[0].resolveResume(); await flush();
+  assert.equal(guideSources(pending).length, 0); assert.equal(pending.audioContexts[0].state, "suspended");
+});
+
+test("ガイドと終了ベルを併用しても一度だけ終了し、余韻の後は全ての音を解放する", async () => {
+  const app = harness(); app.radio("duration", 1); app.radio("sound", "waves");
+  app.input("guide-enabled", true, "change"); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
+  const guide = guideSources(app)[0];
+  const bellSources = app.audioNodes.filter((node) => node.kind === "oscillator" && node.frequency.value >= 660);
+  assert.equal(bellSources.length, 3); assert.ok(bellSources.every((node) => node.starts[0] === 60));
+  app.advance(60_000);
+  assert.equal(app.byId("complete-view").hidden, false); assert.ok(guide.disconnected);
+  assert.ok(bellSources.every((node) => !node.disconnected));
+  app.advance(3000);
+  assert.ok(app.audioNodes.every((node) => node.disconnected)); assert.equal(app.audioContexts[0].state, "suspended");
+  app.click("restart-button"); await flush();
+  assert.equal(guideSources(app).at(-1).offsets[0], 0);
+  app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every((node) => node.disconnected));
 });

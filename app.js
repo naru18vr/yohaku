@@ -4,11 +4,12 @@
   const STORAGE_KEY = "yohaku-settings-v1";
   const MINUTE_MS = 60_000;
   const UPDATE_INTERVAL_MS = 200;
-  const AUDIO = { ambientLevel: 0.45, bellLevel: 0.1, fadeIn: 1.5, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25 };
+  const AUDIO = { ambientLevel: 0.45, guideLevel: 0.12, bellLevel: 0.1, noiseDuration: 20, noiseBlend: 1, fadeIn: 1.5, guideFadeIn: 0.25, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25, guideTolerance: 0.3 };
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
+  const GUIDE = { lowFrequency: 264, highFrequency: 396, edgeFade: 0.35 };
   const SOUND_NAMES = { silent: "無音", rain: "雨", waves: "波" };
-  const defaults = { minutes: 3, sound: "silent", volume: 35, bell: false, theme: "auto" };
+  const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
   const views = { home: byId("home-view"), session: byId("session-view"), complete: byId("complete-view") };
@@ -33,6 +34,7 @@
         minutes: [1, 3, 5, 10].includes(saved.minutes) ? saved.minutes : defaults.minutes,
         sound: Object.hasOwn(SOUND_NAMES, saved.sound) ? saved.sound : defaults.sound,
         volume: Number.isFinite(saved.volume) ? Math.round(Math.min(100, Math.max(0, saved.volume))) : defaults.volume,
+        guide: typeof saved.guide === "boolean" ? saved.guide : defaults.guide,
         bell: typeof saved.bell === "boolean" ? saved.bell : defaults.bell,
         theme: ["auto", "light", "dark"].includes(saved.theme) ? saved.theme : defaults.theme,
       };
@@ -49,7 +51,9 @@
     constructor() {
       this.context = null;
       this.noiseBuffer = null;
+      this.guideBuffer = null;
       this.ambient = null;
+      this.guide = null;
       this.bell = null;
       this.graphs = new Set();
       this.version = 0;
@@ -61,10 +65,11 @@
       const version = ++this.version;
       this.ready = false;
       this.cancelBell();
-      this.wantsAudio = settings.volume > 0 && (settings.sound !== "silent" || settings.bell);
+      this.wantsAudio = settings.volume > 0 && (settings.sound !== "silent" || settings.guide || settings.bell);
       clearAudioNotice();
       if (!this.wantsAudio) {
         this.stopAmbient();
+        this.stopGuide();
         this.suspendIfIdle();
         return;
       }
@@ -76,6 +81,7 @@
           const context = new Context();
           this.context = context;
           this.noiseBuffer = null;
+          this.guideBuffer = null;
           context.addEventListener("statechange", () => this.onStateChange(context));
         }
         // resume()はクリック処理中に呼び、自動再生にはしません。
@@ -108,8 +114,11 @@
       if (left === 0) { update(); return; }
       if (this.ambient?.sound !== settings.sound) this.stopAmbient();
       if (settings.sound !== "silent" && !this.ambient) this.startAmbient(settings.sound);
+      this.syncGuide();
+      const remaining = getRemaining();
+      if (state !== "running" || remaining === 0) { if (state === "running") update(); return; }
       this.setVolume();
-      if (settings.bell) this.scheduleBell(left);
+      if (settings.bell) this.scheduleBell(remaining);
       clearAudioNotice();
     }
 
@@ -126,6 +135,7 @@
       for (const node of graph.nodes) { try { node.disconnect(); } catch { /* 切断済みのノードは無視します。 */ } }
       this.graphs.delete(graph);
       if (this.ambient === graph) this.ambient = null;
+      if (this.guide === graph) this.guide = null;
       if (this.bell === graph) this.bell = null;
       this.suspendIfIdle();
     }
@@ -148,11 +158,14 @@
 
     createNoiseBuffer() {
       const context = this.context;
-      const buffer = context.createBuffer(2, context.sampleRate * 4, context.sampleRate);
+      const length = Math.round(context.sampleRate * AUDIO.noiseDuration);
+      const blendLength = Math.round(context.sampleRate * AUDIO.noiseBlend);
+      const buffer = context.createBuffer(2, length, context.sampleRate);
       for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
         const samples = buffer.getChannelData(channel);
+        const noise = new Float32Array(length + blendLength);
         let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
-        for (let i = 0; i < samples.length; i++) {
+        for (let i = -context.sampleRate; i < noise.length; i++) {
           const white = Math.random() * 2 - 1;
           b0 = 0.99886 * b0 + white * 0.0555179;
           b1 = 0.99332 * b1 + white * 0.0750759;
@@ -160,17 +173,14 @@
           b3 = 0.8665 * b3 + white * 0.3104856;
           b4 = 0.55 * b4 + white * 0.5329522;
           b5 = -0.7616 * b5 - white * 0.016898;
-          samples[i] = Math.max(-1, Math.min(1, (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11));
+          if (i >= 0) noise[i] = Math.max(-1, Math.min(1, (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11));
           b6 = white * 0.115926;
         }
-        // 短いクロスフェードでループ境界のクリック音を抑えます。
-        const blendLength = Math.floor(context.sampleRate * 0.08);
-        const seam = (samples[0] + samples[samples.length - 1]) / 2;
+        samples.set(noise.subarray(0, length));
+        // 末尾に続くノイズを先頭へ重ね、つなぎ目でも音の密度を保ちます。
         for (let i = 0; i < blendLength; i++) {
-          const weight = i / blendLength;
-          samples[i] = seam * (1 - weight) + samples[i] * weight;
-          const end = samples.length - 1 - i;
-          samples[end] = seam * (1 - weight) + samples[end] * weight;
+          const angle = i / (blendLength - 1) * Math.PI / 2;
+          samples[i] = Math.max(-1, Math.min(1, noise[length + i] * Math.cos(angle) + noise[i] * Math.sin(angle)));
         }
       }
       return buffer;
@@ -197,13 +207,14 @@
       highpass.frequency.value = sound === "rain" ? 180 : 60;
       highpass.Q.value = 0.5;
       const texture = addNode(context.createGain());
-      texture.gain.value = sound === "rain" ? 1 : 0.62;
+      texture.gain.value = sound === "rain" ? 1 : 0.7;
       const volume = addNode(context.createGain());
       graph.volume = volume;
       volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
       const envelope = addNode(context.createGain());
       graph.envelope = envelope;
       graph.startedAt = context.currentTime;
+      graph.fadeIn = AUDIO.fadeIn;
       envelope.gain.setValueAtTime(0, graph.startedAt);
       envelope.gain.linearRampToValueAtTime(1, graph.startedAt + AUDIO.fadeIn);
       source.connect(lowpass).connect(highpass).connect(texture).connect(volume).connect(envelope).connect(context.destination);
@@ -212,7 +223,7 @@
         graph.sources.push(swell);
         swell.frequency.value = 1 / 11;
         const depth = addNode(context.createGain());
-        depth.gain.value = 0.28;
+        depth.gain.value = 0.2;
         swell.connect(depth).connect(texture.gain);
         swell.start();
       }
@@ -220,10 +231,75 @@
       source.start();
     }
 
+    createGuideBuffer() {
+      const sampleRate = this.context.sampleRate;
+      const buffer = this.context.createBuffer(1, sampleRate * BREATH_CYCLE_MS / 1000, sampleRate);
+      const samples = buffer.getChannelData(0);
+      const inhale = BREATH.inhale / 1000;
+      const exhaleAt = (BREATH.inhale + BREATH.hold) / 1000;
+      const exhale = BREATH.exhale / 1000;
+      let phase = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const time = i / sampleRate;
+        const breathingIn = time < inhale;
+        if (!breathingIn && time < exhaleAt) continue;
+        const elapsed = breathingIn ? time : time - exhaleAt;
+        const duration = breathingIn ? inhale : exhale;
+        const progress = (1 - Math.cos(Math.PI * elapsed / duration)) / 2;
+        const pitch = breathingIn ? progress : 1 - progress;
+        const frequency = GUIDE.lowFrequency + (GUIDE.highFrequency - GUIDE.lowFrequency) * pitch;
+        const edge = Math.min(1, elapsed / GUIDE.edgeFade, (duration - elapsed) / GUIDE.edgeFade);
+        const envelope = (1 - Math.cos(Math.PI * edge)) / 2;
+        samples[i] = Math.sin(phase) * envelope;
+        phase = (phase + 2 * Math.PI * frequency / sampleRate) % (2 * Math.PI);
+      }
+      return buffer;
+    }
+
+    syncGuide() {
+      if (!settings.guide) { this.stopGuide(); return; }
+      const cycle = BREATH_CYCLE_MS / 1000;
+      const elapsed = (totalMs - getRemaining()) / 1000;
+      if (this.guide) {
+        const playingPhase = (this.context.currentTime - this.guide.startedAt + this.guide.offset) % cycle;
+        const difference = Math.abs(playingPhase - elapsed % cycle);
+        if (Math.min(difference, cycle - difference) <= AUDIO.guideTolerance) return;
+        this.stopGuide();
+      }
+      if (!this.guideBuffer) this.guideBuffer = this.createGuideBuffer();
+      const left = getRemaining();
+      if (left === 0) { update(); return; }
+      const context = this.context;
+      const graph = this.createGraph();
+      this.guide = graph;
+      const addNode = (node) => { graph.nodes.push(node); return node; };
+      const source = addNode(context.createBufferSource());
+      graph.sources.push(source);
+      source.buffer = this.guideBuffer;
+      source.loop = true;
+      const volume = addNode(context.createGain());
+      graph.volume = volume;
+      volume.gain.value = settings.volume / 100 * AUDIO.guideLevel;
+      const envelope = addNode(context.createGain());
+      graph.envelope = envelope;
+      graph.startedAt = context.currentTime;
+      graph.fadeIn = AUDIO.guideFadeIn;
+      graph.offset = (totalMs - left) / 1000 % cycle;
+      envelope.gain.setValueAtTime(0, graph.startedAt);
+      envelope.gain.linearRampToValueAtTime(1, graph.startedAt + graph.fadeIn);
+      source.connect(volume).connect(envelope).connect(context.destination);
+      source.onended = () => this.disposeGraph(graph);
+      source.start(graph.startedAt, graph.offset);
+      // ページの更新処理が遅れても、音声時計で終了時刻に止めます。
+      graph.stopAt = graph.startedAt + left / 1000;
+      source.stop(graph.stopAt);
+    }
+
     setVolume() {
       if (!this.context) return;
       const now = this.context.currentTime;
       if (this.ambient) this.ambient.volume.gain.setTargetAtTime(settings.volume / 100 * AUDIO.ambientLevel, now, 0.08);
+      if (this.guide) this.guide.volume.gain.setTargetAtTime(settings.volume / 100 * AUDIO.guideLevel, now, 0.08);
       if (this.bell) this.bell.master.gain.setTargetAtTime(settings.volume / 100 * AUDIO.bellLevel, now, 0.08);
     }
 
@@ -259,21 +335,31 @@
     }
 
     stopAmbient() {
-      if (!this.ambient) return;
       const graph = this.ambient;
       this.ambient = null;
+      this.stopLoop(graph);
+    }
+
+    stopGuide() {
+      const graph = this.guide;
+      this.guide = null;
+      this.stopLoop(graph);
+    }
+
+    stopLoop(graph) {
+      if (!graph) return;
       if (this.context.state !== "running" || !graph.envelope) { this.disposeGraph(graph); return; }
       try {
         const now = this.context.currentTime;
         const gain = graph.envelope.gain;
         if (typeof gain.cancelAndHoldAtTime === "function") gain.cancelAndHoldAtTime(now);
         else {
-          const heldValue = Math.min(1, Math.max(0, (now - graph.startedAt) / AUDIO.fadeIn));
+          const heldValue = Math.min(1, Math.max(0, (now - graph.startedAt) / graph.fadeIn));
           gain.cancelScheduledValues(now);
           gain.setValueAtTime(heldValue, now);
         }
         gain.linearRampToValueAtTime(0, now + AUDIO.fadeOut);
-        graph.sources.forEach((source) => source.stop(now + AUDIO.stopDelay));
+        graph.sources.forEach((source) => source.stop(Math.min(graph.stopAt ?? Infinity, now + AUDIO.stopDelay)));
       } catch { this.disposeGraph(graph); }
     }
 
@@ -286,6 +372,7 @@
       this.ready = false;
       this.wantsAudio = false;
       this.stopAmbient();
+      this.stopGuide();
       const bellIsDue = this.bell && this.context?.state === "running" && this.context.currentTime + AUDIO.bellGrace >= this.bell.at;
       if (!keepBell || !bellIsDue) this.cancelBell();
       this.suspendIfIdle();
@@ -314,10 +401,12 @@
     document.querySelectorAll('input[name="theme"]').forEach((input) => { input.checked = input.value === settings.theme; });
     byId("start-label").textContent = `${settings.minutes}分休む`;
     byId("restart-button").textContent = `もう${settings.minutes}分休む`;
-    document.querySelectorAll(".sound-label").forEach((label) => { label.textContent = SOUND_NAMES[settings.sound]; });
+    const soundLabel = settings.guide ? (settings.sound === "silent" ? "呼吸ガイド" : `${SOUND_NAMES[settings.sound]}・ガイド`) : SOUND_NAMES[settings.sound];
+    document.querySelectorAll(".sound-label").forEach((label) => { label.textContent = soundLabel; });
     byId("volume").value = settings.volume;
     byId("volume-value").value = `${settings.volume}%`;
-    byId("volume").disabled = settings.sound === "silent" && !settings.bell;
+    byId("volume").disabled = settings.sound === "silent" && !settings.guide && !settings.bell;
+    byId("guide-enabled").checked = settings.guide;
     byId("bell-enabled").checked = settings.bell;
     applyTheme();
   }
@@ -490,13 +579,13 @@
       else { try { audio.setVolume(); } catch { audio.fail(); } }
     } else { try { audio.setVolume(); } catch { audio.stop(); } }
   });
-  byId("bell-enabled").addEventListener("change", (event) => {
-    settings.bell = event.target.checked;
+  ["guide", "bell"].forEach((option) => byId(`${option}-enabled`).addEventListener("change", (event) => {
+    settings[option] = event.target.checked;
     saveSettings();
     syncSettings();
     if (state === "running") void audio.play();
     else audio.stop();
-  });
+  }));
   document.querySelectorAll('input[name="theme"]').forEach((input) => input.addEventListener("change", () => {
     settings.theme = input.value;
     saveSettings();

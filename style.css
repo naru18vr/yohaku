@@ -139,14 +139,14 @@ body:has(dialog[open]) { overflow: hidden; }
 input[type="range"] { display: block; width: 100%; height: 44px; margin: 7px 0 0; accent-color: var(--accent); }
 input[type="range"]:disabled { opacity: .4; }
 .volume-group .setting-note { margin-top: 0; }
-.bell-setting { position: relative; display: flex; align-items: center; justify-content: space-between; min-height: 64px; gap: 12px; font-size: 15px; cursor: pointer; }
-.bell-setting .setting-note { margin-top: 2px; }
-.bell-setting input { position: absolute; right: 0; width: 50px; height: 44px; margin: 0; opacity: 0; cursor: pointer; }
+.audio-switch { position: relative; display: flex; align-items: center; justify-content: space-between; min-height: 64px; gap: 12px; font-size: 15px; cursor: pointer; }
+.audio-switch .setting-note { margin-top: 2px; }
+.audio-switch input { position: absolute; right: 0; width: 50px; height: 44px; margin: 0; opacity: 0; cursor: pointer; }
 .switch-track { display: block; flex: none; width: 46px; height: 27px; border: 1px solid var(--muted); border-radius: 100px; background: var(--line); padding: 3px; }
 .switch-track::after { content: ""; display: block; width: 19px; height: 19px; border-radius: 50%; background: var(--muted); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); transition: transform .2s; }
-.bell-setting input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
-.bell-setting input:checked + .switch-track::after { transform: translateX(18px); background: var(--button-text); }
-.bell-setting input:focus-visible + .switch-track { outline: 2px solid var(--focus); outline-offset: 4px; }
+.audio-switch input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
+.audio-switch input:checked + .switch-track::after { transform: translateX(18px); background: var(--button-text); }
+.audio-switch input:focus-visible + .switch-track { outline: 2px solid var(--focus); outline-offset: 4px; }
 .theme-group { padding-top: 22px; border-top: 1px solid var(--line); }
 .theme-group legend { float: left; width: 100%; }
 .theme-group .segmented-options { clear: both; }
@@ -246,7 +246,7 @@ input[type="range"]:disabled { opacity: .4; }
   .duration-choice input:checked + span, .segment-choice input:checked + span { text-decoration: underline; }
   .switch-track { forced-color-adjust: none; background: Canvas; border-color: CanvasText; }
   .switch-track::after { background: CanvasText; box-shadow: none; }
-  .bell-setting input:checked + .switch-track { background: Highlight; border-color: Highlight; }
-  .bell-setting input:checked + .switch-track::after { background: HighlightText; }
-  .bell-setting input:focus-visible + .switch-track { outline-color: Highlight; }
+  .audio-switch input:checked + .switch-track { background: Highlight; border-color: Highlight; }
+  .audio-switch input:checked + .switch-track::after { background: HighlightText; }
+  .audio-switch input:focus-visible + .switch-track { outline-color: Highlight; }
 }
