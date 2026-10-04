@@ -63,6 +63,7 @@ Node.js、npm、ビルド処理は、アプリの利用・公開には必要あ�
 公開先は [https://naru18vr.github.io/yohaku/](https://naru18vr.github.io/yohaku/) です。このリポジトリではPagesを有効にして公開済みです。
 CSS・JavaScript・アイコン・Manifestは相対パスなので、`/yohaku/` の下でも動きます。
 `.nojekyll` でJekyllの処理を省きます。GitHubが用意するPagesのデプロイ処理自体は実行されます。
+更新時は`index.html`のCSS・JavaScript URLと`tests/responsive.html`のフレームURLの`v`を更新し、ブラウザに新しいファイルを読み込ませます。
 
 別のリポジトリや独自ドメインで公開する場合は、`index.html` の canonical、`og:url`、`og:image` を公開URLに変更してください。
 HTTPSはGitHub Pages側で設定します。
