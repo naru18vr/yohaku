@@ -245,7 +245,7 @@
       const graph = this.createGraph();
       this.ambient = graph;
       graph.sound = "rain2";
-      graph.volumeScale = 2;
+      graph.volumeScale = 4;
       // 録音はストリーミングし、長い音源全体をAudioBufferへ展開しません。
       const media = new window.Audio("assets/audio/rain2.mp3");
       graph.media = media;

@@ -304,11 +304,11 @@ test("雨 fugisako verは開始後だけ録音を読み込み、音量変更・�
   const media = app.mediaElements[0];
   assert.equal(media.src, "assets/audio/rain2.mp3");
   assert.equal(media.loop, true); assert.equal(media.paused, false);
-  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.315) < 0.00001));
+  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.63) < 0.00001));
   assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 0);
   app.input("volume", 70); await flush();
   assert.equal(app.mediaElements.length, 1);
-  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.63) < 0.00001));
+  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 1.26) < 0.00001));
   app.click("pause-button"); app.advance(500); await flush();
   assert.equal(media.paused, true); assert.equal(media.src, "");
   assert.ok(app.audioNodes.every((node) => node.disconnected));
