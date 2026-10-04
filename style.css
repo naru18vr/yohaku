@@ -143,7 +143,7 @@ input[type="range"]:disabled { opacity: .4; }
 .bell-setting .setting-note { margin-top: 2px; }
 .bell-setting input { position: absolute; right: 0; width: 50px; height: 44px; margin: 0; opacity: 0; cursor: pointer; }
 .switch-track { display: block; flex: none; width: 46px; height: 27px; border: 1px solid var(--muted); border-radius: 100px; background: var(--line); padding: 3px; }
-.switch-track::after { content: ""; display: block; width: 19px; height: 19px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); transition: transform .2s; }
+.switch-track::after { content: ""; display: block; width: 19px; height: 19px; border-radius: 50%; background: var(--muted); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); transition: transform .2s; }
 .bell-setting input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
 .bell-setting input:checked + .switch-track::after { transform: translateX(18px); background: var(--button-text); }
 .bell-setting input:focus-visible + .switch-track { outline: 2px solid var(--focus); outline-offset: 4px; }
@@ -151,7 +151,7 @@ input[type="range"]:disabled { opacity: .4; }
 .theme-group legend { float: left; width: 100%; }
 .theme-group .segmented-options { clear: both; }
 .theme-group .segment-choice:first-child { flex: 1.6; }
-.theme-group .segment-choice span { font-size: 12px; padding: 8px 6px; }
+.theme-group .segment-choice span { font-size: 14px; line-height: 1.5; padding: 8px 6px; }
 .privacy-note { font-size: 12px; line-height: 1.8; text-align: center; color: var(--muted); margin: 28px 0 0; }
 
 @media (hover: hover) {
@@ -229,5 +229,9 @@ input[type="range"]:disabled { opacity: .4; }
   .orb-ring { border-color: CanvasText; }
   .primary-button, .secondary-button, .duration-choice input:checked + span, .segment-choice input:checked + span { border: 2px solid ButtonText; }
   .duration-choice input:checked + span, .segment-choice input:checked + span { text-decoration: underline; }
-  .switch-track { forced-color-adjust: none; }
+  .switch-track { forced-color-adjust: none; background: Canvas; border-color: CanvasText; }
+  .switch-track::after { background: CanvasText; box-shadow: none; }
+  .bell-setting input:checked + .switch-track { background: Highlight; border-color: Highlight; }
+  .bell-setting input:checked + .switch-track::after { background: HighlightText; }
+  .bell-setting input:focus-visible + .switch-track { outline-color: Highlight; }
 }

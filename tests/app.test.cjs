@@ -12,9 +12,10 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 // ブラウザを置き換えるUIテストではなく、実際のイベント処理を動かすロジックテストです。
 function harness(options = {}) {
-  let now = 0, nextTask = 1;
+  let now = 0, wallClockOffset = 0, nextTask = 1;
   const timers = new Map(), frames = new Map(), storage = new Map(), media = new Map();
   const audioContexts = [], audioNodes = [];
+  const faults = { ...options.audioFaults };
   const elements = [], stack = [];
   let activeElement = null;
   class Element {
@@ -70,32 +71,50 @@ function harness(options = {}) {
     getItem(key) { if (options.storageBlocked) throw new Error("blocked"); return storage.get(key) ?? null; },
     setItem(key, value) { if (options.storageBlocked) throw new Error("blocked"); storage.set(key, value); },
   };
-  const param = (value = 0) => ({ value, setValueAtTime(value) { this.value = value; }, linearRampToValueAtTime(value) { this.value = value; }, exponentialRampToValueAtTime(value) { this.value = value; }, setTargetAtTime(value) { this.value = value; }, cancelScheduledValues() {}, cancelAndHoldAtTime() {} });
-  const node = (kind) => {
-    const result = { kind, gain: param(), frequency: param(), Q: param(), connections: [], starts: [], stops: [], connect(target) { this.connections.push(target); return target; }, disconnect() { this.disconnected = true; }, start(at = now / 1000) { this.starts.push(at); }, stop(at = now / 1000) { this.stops.push(at); } };
+  const param = (value = 0) => {
+    const result = { value, values: [], setValueAtTime(value, at) { this.value = value; this.values.push({ value, at }); }, linearRampToValueAtTime(value) { this.value = value; }, exponentialRampToValueAtTime(value) { this.value = value; }, setTargetAtTime(value) { if (faults.volume) throw new Error("volume failed"); this.value = value; }, cancelScheduledValues() {}, cancelAndHoldAtTime() {} };
+    if (options.legacyCancelHold) delete result.cancelAndHoldAtTime;
+    return result;
+  };
+  const node = (kind, context) => {
+    if (audioNodes.length === faults.createAt) throw new Error("node failed");
+    const result = { kind, context, gain: param(), frequency: param(), Q: param(), connections: [], starts: [], stops: [], connect(target) { if (faults.connect) throw new Error("connect failed"); this.connections.push(target); return target; }, disconnect() { this.disconnected = true; }, start(at = context.currentTime) { if (faults.startKind === kind) throw new Error("start failed"); this.starts.push(at); }, stop(at = context.currentTime) { if (faults.stop) throw new Error("stop failed"); this.stops.push(at); } };
     audioNodes.push(result);
     return result;
   };
   class AudioContext {
     constructor() {
       if (options.audioFailure === "construct") throw new Error("unavailable");
-      this.state = "running"; this.sampleRate = 8000; this.destination = {}; this.listeners = {}; audioContexts.push(this);
+      this._state = options.pendingResume ? "suspended" : "running";
+      this._elapsed = 0; this._changedAt = now;
+      this.sampleRate = 8000; this.destination = {}; this.listeners = {}; this.suspendCalls = 0; audioContexts.push(this);
     }
-    get currentTime() { return now / 1000; }
+    get state() { return this._state; }
+    set state(value) { this._elapsed = this.currentTime; this._changedAt = now; this._state = value; }
+    get currentTime() { return this._elapsed + (this.state === "running" && !this._clockPaused ? (now - this._changedAt) / 1000 : 0); }
+    pauseAudioClock() { this._elapsed = this.currentTime; this._changedAt = now; this._clockPaused = true; }
+    resumeAudioClock() { this._changedAt = now; this._clockPaused = false; }
+    changeState(value) { this.state = value; this.listeners.statechange?.(); }
     addEventListener(type, fn) { this.listeners[type] = fn; }
     resume() {
       if (options.audioFailure === "resume") return Promise.reject(new Error("blocked"));
-      if (options.pendingResume) return new Promise((resolve) => { this.resolveResume = resolve; });
-      this.state = "running"; return Promise.resolve();
+      if (options.pendingResume) return new Promise((resolve) => {
+        (this.pendingResolves ||= []).push(resolve);
+        this.resolveResume = () => { this.changeState("running"); this.pendingResolves.splice(0).forEach((finish) => finish()); };
+      });
+      this.changeState("running"); return Promise.resolve();
     }
+    suspend() { this.suspendCalls++; if (options.audioFailure === "suspend") return Promise.reject(new Error("suspend failed")); this.changeState("suspended"); return Promise.resolve(); }
     createBuffer(channels, length) { const data = Array.from({ length: channels }, () => new Float32Array(length)); return { numberOfChannels: channels, getChannelData: (channel) => data[channel] }; }
-    createBufferSource() { return node("source"); }
-    createBiquadFilter() { return node("filter"); }
-    createGain() { return node("gain"); }
-    createOscillator() { return node("oscillator"); }
+    createBufferSource() { return node("source", this); }
+    createBiquadFilter() { return node("filter", this); }
+    createGain() { return node("gain", this); }
+    createOscillator() { return node("oscillator", this); }
   }
   const window = {
-    AudioContext, listeners: {},
+    AudioContext: options.webkitOnly || options.audioUnavailable ? undefined : AudioContext,
+    webkitAudioContext: options.webkitOnly ? AudioContext : undefined,
+    listeners: {},
     setTimeout(fn, delay) { const id = nextTask++; timers.set(id, { at: now + delay, fn }); return id; },
     clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(fn) { const id = nextTask++; frames.set(id, fn); return id; },
@@ -103,10 +122,16 @@ function harness(options = {}) {
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
     matchMedia(query) { if (!media.has(query)) media.set(query, { matches: query.includes("motion") ? !!options.reducedMotion : !!options.dark, addEventListener(type, fn) { this.listener = fn; } }); return media.get(query); },
   };
-  class ClockDate extends Date { static now() { return now; } }
+  const endAudio = () => {
+    for (const source of audioNodes) {
+      if (source.ended || source.context.state !== "running" || !source.stops.length || source.stops.at(-1) > source.context.currentTime) continue;
+      source.ended = true; source.onended?.();
+    }
+  };
+  class ClockDate extends Date { static now() { return now + wallClockOffset; } }
   vm.runInNewContext(script, { window, document, localStorage, Date: ClockDate, console });
   return {
-    byId, storage, audioContexts, audioNodes, timers, frames, document,
+    byId, storage, audioContexts, audioNodes, timers, frames, document, faults,
     click(id) { byId(id).dispatch("click"); },
     openSettings() { const button = selectAll(".settings-trigger").find((element) => !element.closest("[hidden]")); button.dispatch("click"); return button; },
     radio(name, value) { const group = selectAll(`input[name="${name}"]`); group.forEach((element) => { element.checked = element.value === String(value); }); group.find((element) => element.checked).dispatch("change"); },
@@ -116,11 +141,13 @@ function harness(options = {}) {
       while (timers.size) {
         const [id, task] = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
         if (task.at > end) break;
-        now = task.at; timers.delete(id); task.fn();
+        now = task.at; timers.delete(id); task.fn(); endAudio();
       }
-      now = end;
+      now = end; endAudio();
     },
-    jump(ms) { now += ms; for (const [id, task] of [...timers]) if (task.at <= now) { timers.delete(id); task.fn(); } },
+    jump(ms) { now += ms; for (const [id, task] of [...timers]) if (task.at <= now) { timers.delete(id); task.fn(); } endAudio(); },
+    shiftWallClock(ms) { wallClockOffset += ms; },
+    elapseWithoutCallbacks(ms) { now += ms; },
     visibility(hidden) { document.hidden = hidden; document.dispatch("visibilitychange"); },
     media(query, matches) { const preference = media.get(query); preference.matches = matches; preference.listener(); },
     pagehide() { window.listeners.pagehide.forEach((fn) => fn()); },
@@ -263,7 +290,7 @@ test("ベルは明示的ONの時だけ一度予約し、停止・再開で旧ベ
   assert.ok(bells.every((node) => node.disconnected));
   app.jump(30_000); app.click("pause-button"); await flush();
   bells = app.audioNodes.filter((node) => node.kind === "oscillator");
-  assert.equal(bells.length, 6); assert.ok(bells.slice(3).every((node) => node.starts[0] === 210));
+  assert.equal(bells.length, 6); assert.ok(bells.slice(3).every((node) => node.starts[0] - app.audioContexts[0].currentTime === 170));
   app.advance(170_000);
   assert.equal(app.byId("complete-view").hidden, false);
   assert.equal(app.audioNodes.filter((node) => node.kind === "oscillator").length, 6);
@@ -295,4 +322,185 @@ test("音が中断した場合は再開でき、ページ離脱時は停止す�
   app.click("retry-audio"); await flush(); assert.equal(app.byId("retry-audio").hidden, true);
   app.pagehide(); assert.equal(app.byId("pause-button").textContent, "再開する");
   assert.ok(app.audioNodes.filter((node) => node.kind === "source").every((node) => node.stops.length > 0));
+});
+
+test("中断で音声の時計が止まっても、復帰時のベルを残り時間に合わせる", async () => {
+  const app = harness(); app.radio("sound", "rain"); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
+  const context = app.audioContexts[0];
+  const originalBells = app.audioNodes.filter((node) => node.kind === "oscillator");
+  app.advance(10_000); context.changeState("interrupted");
+  assert.ok(originalBells.every((node) => node.disconnected));
+  app.advance(30_000); assert.equal(context.currentTime, 10);
+  context.changeState("running");
+  const replacementBells = app.audioNodes.filter((node) => node.kind === "oscillator").slice(3);
+  assert.equal(replacementBells.length, 3);
+  assert.ok(replacementBells.every((node) => node.starts[0] - context.currentTime === 140));
+  assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 1);
+  app.advance(140_000); assert.equal(app.byId("complete-view").hidden, false);
+  app.advance(3000);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  assert.equal(context.state, "suspended");
+});
+
+test("更新が凍結したまま期限を過ぎて音が復帰しても、遅いベルを作らない", async () => {
+  const app = harness(); app.radio("sound", "waves"); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
+  const context = app.audioContexts[0]; context.changeState("interrupted");
+  const nodeCount = app.audioNodes.length;
+  app.elapseWithoutCallbacks(240_000); context.changeState("running");
+  assert.equal(app.byId("complete-view").hidden, false);
+  assert.equal(app.audioNodes.length, nodeCount);
+  app.advance(500);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  assert.equal(context.state, "suspended");
+});
+
+test("環境音を滑らかに停止した後はノードを解放し、AudioContextを休止する", async () => {
+  const app = harness(); app.radio("sound", "waves"); app.click("start-button"); await flush();
+  const context = app.audioContexts[0]; app.click("pause-button");
+  assert.equal(context.state, "running");
+  app.advance(500);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  assert.equal(context.state, "suspended");
+  app.click("pause-button"); await flush();
+  assert.equal(context.state, "running");
+  assert.equal(app.audioContexts.length, 1);
+  app.pagehide();
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  assert.equal(context.state, "suspended");
+});
+
+test("ベルのON/OFFと音量変更で環境音を不要に再生成しない", async () => {
+  const app = harness(); app.radio("sound", "rain"); app.click("start-button"); await flush();
+  const source = app.audioNodes.find((node) => node.kind === "source");
+  app.input("bell-enabled", true, "change"); await flush();
+  app.input("volume", 60); app.input("bell-enabled", false, "change"); await flush();
+  assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 1);
+  assert.equal(source.stops.length, 0);
+  assert.ok(app.audioNodes.filter((node) => node.kind === "oscillator").every((node) => node.disconnected));
+  app.radio("sound", "silent"); await flush(); app.advance(500);
+  assert.equal(app.audioContexts[0].state, "suspended");
+});
+
+test("ベルの余韻が終わるとマスター音量を含む全ノードを解放する", async () => {
+  const app = harness(); app.radio("duration", 1); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
+  const firstNodes = [...app.audioNodes]; app.advance(60_000);
+  assert.ok(firstNodes.every((node) => !node.disconnected));
+  app.advance(3000);
+  assert.ok(firstNodes.every((node) => node.disconnected));
+  assert.equal(app.audioContexts[0].state, "suspended");
+  app.click("restart-button"); await flush();
+  assert.equal(app.audioNodes.filter((node) => node.kind === "oscillator" && !node.disconnected).length, 3);
+  app.click("stop-button"); assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("音声グラフの生成・接続・開始の途中で失敗しても、作ったノードを残さない", async () => {
+  for (const audioFaults of [{ createAt: 0 }, { createAt: 2 }, { createAt: 7 }, { connect: true }, { startKind: "source" }]) {
+    const app = harness({ audioFaults }); app.radio("sound", "waves"); app.click("start-button"); await flush();
+    assert.equal(app.byId("audio-notice").hidden, false);
+    assert.ok(app.audioNodes.every((node) => node.disconnected));
+    assert.equal(app.audioContexts[0].state, "suspended");
+    app.jump(180_000); assert.equal(app.byId("complete-view").hidden, false);
+  }
+  const app = harness({ audioFaults: { createAt: 4 } }); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
+  assert.equal(app.byId("audio-notice").hidden, false);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("停止処理の例外でも切断を実行し、音量処理の失敗後は再試行できる", async () => {
+  const app = harness(); app.radio("sound", "waves"); app.click("start-button"); await flush();
+  app.faults.volume = true; app.input("volume", 40);
+  assert.equal(app.byId("audio-notice").hidden, false);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  delete app.faults.volume; app.click("retry-audio"); await flush();
+  assert.equal(app.byId("audio-notice").hidden, true);
+  app.faults.stop = true; app.click("stop-button");
+  assert.equal(app.byId("home-view").hidden, false);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("休止の拒否や、取り消した音声準備が後から完了しても休息を妨げない", async () => {
+  const rejected = harness({ audioFailure: "suspend" }); rejected.input("bell-enabled", true, "change"); rejected.click("start-button"); await flush();
+  rejected.click("stop-button"); await flush();
+  assert.equal(rejected.byId("home-view").hidden, false);
+  assert.ok(rejected.audioNodes.every((node) => node.disconnected));
+  const pending = harness({ pendingResume: true }); pending.radio("sound", "rain"); pending.click("start-button"); pending.click("stop-button");
+  pending.audioContexts[0].resolveResume(); await flush();
+  assert.equal(pending.audioContexts[0].state, "suspended");
+  assert.equal(pending.audioNodes.length, 0);
+});
+
+test("音声準備中に設定を連続変更しても最後の選択だけを再生する", async () => {
+  const app = harness({ pendingResume: true }); app.radio("sound", "rain"); app.click("start-button");
+  app.radio("sound", "waves"); app.input("bell-enabled", true, "change");
+  app.audioContexts[0].resolveResume(); await flush();
+  assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 1);
+  assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 650));
+  assert.equal(app.audioNodes.filter((node) => node.kind === "oscillator").length, 4);
+});
+
+test("時計が巻き戻っても残り時間や呼吸の位相が逆行しない", () => {
+  const app = harness(); app.click("start-button"); app.advance(8000);
+  assert.equal(app.byId("timer").textContent, "02:52");
+  const scale = app.byId("breathing-circle").style.transform;
+  app.shiftWallClock(-3_600_000); app.advance(200);
+  assert.equal(app.byId("timer").textContent, "02:52");
+  assert.equal(app.byId("breathing-circle").style.transform, scale);
+  app.shiftWallClock(3_600_000); app.advance(200);
+  assert.equal(app.byId("timer").textContent, "02:52");
+  app.shiftWallClock(180_000); app.advance(200);
+  assert.equal(app.byId("complete-view").hidden, false);
+});
+
+test("停止中に動きを減らす設定へ切り替えた場合も、円を静止状態にする", () => {
+  const app = harness(); app.click("start-button"); app.advance(4000); app.click("pause-button");
+  app.media("(prefers-reduced-motion: reduce)", true);
+  assert.equal(app.byId("breathing-circle").style.transform, "scale(1)");
+  assert.equal(app.frames.size, 0);
+});
+
+test("保存された端数の音量をレンジと同じ整数に揃え、テーマを反映する", () => {
+  const app = harness({ saved: JSON.stringify({ volume: 35.7 }), dark: true });
+  assert.equal(app.byId("volume").value, 36);
+  assert.equal(app.byId("volume-value").value, "36%");
+  app.radio("theme", "light");
+  assert.equal(app.document.documentElement.dataset.theme, "light");
+  app.radio("theme", "auto");
+  assert.equal(app.document.documentElement.dataset.theme, undefined);
+});
+
+test("statechangeがなくても、画面復帰時に音声時計とベルを同期する", async () => {
+  const app = harness(); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
+  const context = app.audioContexts[0]; app.advance(10_000); app.visibility(true); context.pauseAudioClock();
+  app.elapseWithoutCallbacks(30_000); context.resumeAudioClock(); app.visibility(false);
+  const bells = app.audioNodes.filter((node) => node.kind === "oscillator");
+  assert.ok(bells.slice(0, 3).every((node) => node.disconnected));
+  assert.ok(bells.slice(3).every((node) => node.starts[0] - context.currentTime === 140));
+  assert.equal(app.byId("timer").textContent, "02:20");
+});
+
+test("音声時計だけが停止して期限を過ぎた場合にも、遅いベルを取り消す", async () => {
+  const app = harness(); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
+  const context = app.audioContexts[0]; app.advance(10_000); app.visibility(true); context.pauseAudioClock();
+  app.elapseWithoutCallbacks(240_000); context.resumeAudioClock(); app.visibility(false);
+  assert.equal(app.byId("complete-view").hidden, false);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  assert.equal(context.state, "suspended");
+});
+
+test("cancelAndHoldAtTimeがない環境でも、途中の音量から滑らかに停止する", async () => {
+  const app = harness({ legacyCancelHold: true }); app.radio("sound", "rain"); app.click("start-button"); await flush();
+  app.advance(300); app.click("pause-button");
+  const held = app.audioNodes.filter((node) => node.kind === "gain").flatMap((node) => node.gain.values).find((event) => event.at === 0.3);
+  assert.ok(held && Math.abs(held.value - 0.2) < 0.000001);
+  app.advance(500);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("webkitAudioContextにも対応し、音声APIがなくても無音で終了まで休める", async () => {
+  const legacy = harness({ webkitOnly: true }); legacy.radio("sound", "rain"); legacy.click("start-button"); await flush();
+  assert.equal(legacy.audioNodes.filter((node) => node.kind === "source").length, 1);
+  const unavailable = harness({ audioUnavailable: true }); unavailable.radio("sound", "rain"); unavailable.click("start-button"); await flush();
+  assert.equal(unavailable.byId("audio-notice").hidden, false);
+  assert.equal(unavailable.audioContexts.length, 0);
+  unavailable.advance(180_000); assert.equal(unavailable.byId("complete-view").hidden, false);
 });

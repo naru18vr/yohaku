@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>yohaku — 表示確認</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; background: #e7e9e2; color: #37443e; font: 16px/1.7 system-ui, sans-serif; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    p { margin: 0 0 24px; max-width: 760px; }
+    main { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 28px; }
+    section { flex: none; max-width: none; }
+    h2 { font-size: 15px; font-weight: 500; margin: 0 0 8px; }
+    iframe { display: block; border: 0; width: var(--width); height: var(--height); outline: 1px solid #8d9b8e; background: #f5f3ed; }
+  </style>
+</head>
+<body>
+  <h1>表示確認</h1>
+  <p>各フレームで、開始・停止・音設定を操作できます。幅はCSSピクセルです。現在のブラウザでの描画確認用であり、SafariやAndroid端末のエミュレーションではありません。</p>
+  <main>
+    <section><h2>小さい縦画面 · 320 × 568</h2><iframe name="small" title="320×568のアプリ" src="../index.html" style="--width:320px;--height:568px"></iframe></section>
+    <section><h2>縦画面 · 375 × 667</h2><iframe name="portrait" title="375×667のアプリ" src="../index.html" style="--width:375px;--height:667px"></iframe></section>
+    <section><h2>長い縦画面 · 390 × 844</h2><iframe name="tall" title="390×844のアプリ" src="../index.html" style="--width:390px;--height:844px"></iframe></section>
+    <section><h2>広い縦画面 · 412 × 915</h2><iframe name="wide" title="412×915のアプリ" src="../index.html" style="--width:412px;--height:915px"></iframe></section>
+    <section><h2>短い横画面 · 568 × 320</h2><iframe name="short-landscape" title="568×320のアプリ" src="../index.html" style="--width:568px;--height:320px"></iframe></section>
+    <section><h2>横画面 · 844 × 390</h2><iframe name="landscape" title="844×390のアプリ" src="../index.html" style="--width:844px;--height:390px"></iframe></section>
+    <section><h2>デスクトップ · 1024 × 768</h2><iframe name="desktop" title="1024×768のアプリ" src="../index.html" style="--width:1024px;--height:768px"></iframe></section>
+  </main>
+</body>
+</html>
