@@ -7,6 +7,8 @@
   const AUDIO = { ambientLevel: 0.45, guideLevel: 0.12, bellLevel: 0.1, noiseDuration: 20, noiseBlend: 1, fadeIn: 1.5, guideFadeIn: 0.25, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25, guideTolerance: 0.3 };
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
+  const RAIN_URL = "assets/sounds/rain.mp3";
+  const RAIN_LOAD_TIMEOUT_MS = 5000;
   const GUIDE = { lowFrequency: 264, highFrequency: 396, edgeFade: 0.35 };
   const SOUND_NAMES = { silent: "無音", rain: "雨", waves: "波" };
   const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
@@ -59,6 +61,7 @@
       this.version = 0;
       this.wantsAudio = false;
       this.ready = false;
+      this.usingFallback = false;
     }
 
     async play() {
@@ -85,9 +88,25 @@
           context.addEventListener("statechange", () => this.onStateChange(context));
         }
         // resume()はクリック処理中に呼び、自動再生にはしません。
-        await this.context.resume();
+        const contextReady = this.context.resume();
+        void contextReady.catch(() => {});
+        const canUseRecording = typeof window.Audio === "function" && typeof this.context.createMediaElementSource === "function" && window.location?.protocol !== "file:";
+        if (settings.sound === "rain" && canUseRecording && !this.usingFallback && !this.ambient?.media) {
+          this.stopAmbient();
+          this.startRecordedRain();
+        }
+        const recording = settings.sound === "rain" ? this.ambient?.media && this.ambient : null;
+        const mediaReady = recording ? this.prepareRecording(recording) : Promise.resolve();
+        const [contextResult, mediaResult] = await Promise.allSettled([contextReady, mediaReady]);
         if (version !== this.version || state !== "running") { this.suspendIfIdle(); return; }
-        if (this.context.state !== "running") throw new Error("Audio paused");
+        if (contextResult.status === "rejected" || this.context.state !== "running") throw new Error("Audio paused");
+        if (recording && mediaResult.status === "rejected" && this.ambient === recording) this.fallbackRecording(recording);
+        else if (recording && this.ambient === recording && !recording.started) {
+          recording.started = true;
+          recording.startedAt = this.context.currentTime;
+          recording.envelope.gain.setValueAtTime(0, recording.startedAt);
+          recording.envelope.gain.linearRampToValueAtTime(1, recording.startedAt + AUDIO.fadeIn);
+        }
         this.ready = true;
         this.syncPlayback();
       } catch {
@@ -112,7 +131,7 @@
       const left = getRemaining();
       this.cancelBell();
       if (left === 0) { update(); return; }
-      if (this.ambient?.sound !== settings.sound) this.stopAmbient();
+      if (this.ambient?.sound !== settings.sound) { this.stopAmbient(); this.usingFallback = false; }
       if (settings.sound !== "silent" && !this.ambient) this.startAmbient(settings.sound);
       this.syncGuide();
       const remaining = getRemaining();
@@ -120,6 +139,8 @@
       this.setVolume();
       if (settings.bell) this.scheduleBell(remaining);
       clearAudioNotice();
+      if (this.usingFallback) showAudioNotice("雨音を読み込めませんでした。やわらかな音で休めます。", true);
+      else if (this.ambient?.media?.paused) showAudioNotice("雨音が止まっています。そのまま休んでも大丈夫です。", true);
     }
 
     createGraph() {
@@ -131,6 +152,12 @@
     disposeGraph(graph) {
       if (!graph || graph.disposed) return;
       graph.disposed = true;
+      window.clearTimeout(graph.loadTask);
+      window.clearTimeout(graph.cleanupTask);
+      graph.cancelLoad?.(new Error("Audio stopped"));
+      if (graph.media) {
+        try { graph.media.pause(); graph.media.removeAttribute("src"); graph.media.load(); } catch { /* 再生済みの録音も解放します。 */ }
+      }
       for (const source of graph.sources) { try { source.stop(); } catch { /* 未開始・終了済みでも切断します。 */ } }
       for (const node of graph.nodes) { try { node.disconnect(); } catch { /* 切断済みのノードは無視します。 */ } }
       this.graphs.delete(graph);
@@ -184,6 +211,79 @@
         }
       }
       return buffer;
+    }
+
+    startRecordedRain() {
+      const context = this.context;
+      const graph = this.createGraph();
+      this.ambient = graph;
+      graph.sound = "rain";
+      graph.media = new window.Audio();
+      graph.media.preload = "none";
+      graph.media.src = RAIN_URL;
+      graph.media.loop = false;
+      const addNode = (node) => { graph.nodes.push(node); return node; };
+      const source = addNode(context.createMediaElementSource(graph.media));
+      const volume = addNode(context.createGain());
+      graph.volume = volume;
+      volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
+      const envelope = addNode(context.createGain());
+      graph.envelope = envelope;
+      graph.startedAt = context.currentTime;
+      graph.fadeIn = AUDIO.fadeIn;
+      envelope.gain.value = 0;
+      source.connect(volume).connect(envelope).connect(context.destination);
+      graph.media.addEventListener("pause", () => {
+        if (this.ambient === graph && state === "running" && !graph.disposed) {
+          graph.started = false;
+          graph.envelope.gain.setValueAtTime(0, context.currentTime);
+          showAudioNotice("雨音が止まっています。そのまま休んでも大丈夫です。", true);
+        }
+      });
+      graph.media.addEventListener("error", () => {
+        if (graph.started && this.ambient === graph && state === "running") {
+          try {
+            this.fallbackRecording(graph);
+            showAudioNotice("雨音を読み込めませんでした。やわらかな音で休めます。", true);
+          } catch { this.fail(); }
+        }
+      });
+      graph.media.addEventListener("ended", () => {
+        try {
+          if (this.ambient === graph && state === "running" && getRemaining() > 1000) this.fallbackRecording(graph);
+          else this.disposeGraph(graph);
+        } catch { this.fail(); }
+      });
+    }
+
+    prepareRecording(graph) {
+      if (graph.playPromise) return graph.playPromise;
+      if (!graph.media.paused) return Promise.resolve();
+      const cancelled = new Promise((_, reject) => {
+        graph.cancelLoad = reject;
+        graph.loadTask = window.setTimeout(() => reject(new Error("Audio loading timeout")), RAIN_LOAD_TIMEOUT_MS);
+      });
+      // HTMLの音声再生も、開始・設定・再開の操作中に許可を求めます。
+      let playback;
+      try { playback = graph.media.play(); } catch (error) { playback = Promise.reject(error); }
+      graph.playPromise = Promise.race([playback, cancelled]).finally(() => {
+        window.clearTimeout(graph.loadTask);
+        graph.cancelLoad = null;
+        graph.playPromise = null;
+      });
+      return graph.playPromise;
+    }
+
+    fallbackRecording(graph) {
+      this.disposeGraph(graph);
+      this.usingFallback = true;
+      if (state === "running" && settings.sound === "rain" && settings.volume > 0) this.startAmbient("rain");
+    }
+
+    retry() {
+      this.usingFallback = false;
+      if (settings.sound === "rain" && !this.ambient?.media) this.stopAmbient();
+      void this.play();
     }
 
     startAmbient(sound) {
@@ -354,12 +454,16 @@
         const gain = graph.envelope.gain;
         if (typeof gain.cancelAndHoldAtTime === "function") gain.cancelAndHoldAtTime(now);
         else {
-          const heldValue = Math.min(1, Math.max(0, (now - graph.startedAt) / graph.fadeIn));
+          const heldValue = graph.media && !graph.started ? 0 : Math.min(1, Math.max(0, (now - graph.startedAt) / graph.fadeIn));
           gain.cancelScheduledValues(now);
           gain.setValueAtTime(heldValue, now);
         }
         gain.linearRampToValueAtTime(0, now + AUDIO.fadeOut);
         graph.sources.forEach((source) => source.stop(Math.min(graph.stopAt ?? Infinity, now + AUDIO.stopDelay)));
+        if (graph.media) {
+          if (!graph.started) graph.cancelLoad?.(new Error("Audio stopped"));
+          graph.cleanupTask = window.setTimeout(() => this.disposeGraph(graph), AUDIO.stopDelay * 1000);
+        }
       } catch { this.disposeGraph(graph); }
     }
 
@@ -371,6 +475,7 @@
       this.version++;
       this.ready = false;
       this.wantsAudio = false;
+      this.usingFallback = false;
       this.stopAmbient();
       this.stopGuide();
       const bellIsDue = this.bell && this.context?.state === "running" && this.context.currentTime + AUDIO.bellGrace >= this.bell.at;
@@ -547,7 +652,7 @@
   byId("pause-button").addEventListener("click", pauseOrResume);
   byId("stop-button").addEventListener("click", goHome);
   byId("finish-button").addEventListener("click", goHome);
-  byId("retry-audio").addEventListener("click", () => { if (state === "running") void audio.play(); });
+  byId("retry-audio").addEventListener("click", () => { if (state === "running") audio.retry(); });
   byId("time-toggle").addEventListener("click", () => {
     timeHidden = !timeHidden;
     byId("timer").hidden = timeHidden;
