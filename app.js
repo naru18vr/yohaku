@@ -7,8 +7,15 @@
   const MAX_MINUTES = 360;
   const RECORDED_BLEND_SECONDS = 4;
   const AUDIO = { ambientLevel: 0.45, guideLevel: 0.08, bellLevel: 0.1, noiseDuration: 20, noiseBlend: 1, fadeIn: 1.5, guideFadeIn: 0.08, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25, guideTolerance: 0.3 };
-  const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
-  const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
+  const BREATH = { minScale: 0.82, maxScale: 1.08 };
+  const BREATH_PATTERNS = {
+    original: { inhale: 4000, hold: 2000, exhale: 6000, description: "4秒吸う → 2秒そのまま → 6秒吐く" },
+    gentle: { inhale: 4000, hold: 0, exhale: 6000, description: "4秒吸う → 6秒吐く（息を止めない）" },
+    equal: { inhale: 4000, hold: 0, exhale: 4000, description: "4秒吸う → 4秒吐く（息を止めない）" },
+    slow: { inhale: 5000, hold: 0, exhale: 5000, description: "5秒吸う → 5秒吐く（息を止めない）" },
+  };
+  const breathPattern = () => BREATH_PATTERNS[settings.breathPattern];
+  const breathCycleMs = () => { const pattern = breathPattern(); return pattern.inhale + pattern.hold + pattern.exhale; };
   const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
   const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波", fire: "焚き火", white: "ホワイトノイズ", pink: "ピンクノイズ", tone40: "40Hz変調" };
   const SOUND_DESCRIPTIONS = {
@@ -20,7 +27,7 @@
     pink: "低い周波数ほど強くなるノイズです。",
     tone40: "聞こえる高さの音に、毎秒40回の強弱をつけた音です。純粋な40Hzの低音とは異なります。",
   };
-  const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, screenOn: false, theme: "auto" };
+  const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, breathPattern: "original", bell: false, screenOn: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
   const views = { home: byId("home-view"), session: byId("session-view"), complete: byId("complete-view") };
@@ -50,6 +57,7 @@
         sound: Object.hasOwn(SOUND_NAMES, saved.sound) ? saved.sound : defaults.sound,
         volume: Number.isFinite(saved.volume) ? Math.round(Math.min(100, Math.max(0, saved.volume))) : defaults.volume,
         guide: typeof saved.guide === "boolean" ? saved.guide : defaults.guide,
+        breathPattern: Object.hasOwn(BREATH_PATTERNS, saved.breathPattern) ? saved.breathPattern : defaults.breathPattern,
         bell: typeof saved.bell === "boolean" ? saved.bell : defaults.bell,
         screenOn: typeof saved.screenOn === "boolean" ? saved.screenOn : defaults.screenOn,
         theme: ["auto", "light", "dark"].includes(saved.theme) ? saved.theme : defaults.theme,
@@ -526,9 +534,10 @@
 
     createGuideBuffer() {
       const sampleRate = this.context.sampleRate;
-      const buffer = this.context.createBuffer(1, sampleRate * BREATH_CYCLE_MS / 1000, sampleRate);
+      const pattern = breathPattern();
+      const buffer = this.context.createBuffer(1, sampleRate * breathCycleMs() / 1000, sampleRate);
       const samples = buffer.getChannelData(0);
-      const exhaleAt = (BREATH.inhale + BREATH.hold) / 1000;
+      const exhaleAt = (pattern.inhale + pattern.hold) / 1000;
       // 音程をうねらせず、吸う・吐くの始まりだけを短い柔らかな音で知らせます。
       // なだらかな立ち上がりと余韻の後は無音。倍音は先に減衰させます。
       for (const [at, frequency] of [[0, GUIDE.inhaleFrequency], [exhaleAt, GUIDE.exhaleFrequency]]) {
@@ -549,20 +558,24 @@
 
     syncGuide() {
       if (!settings.guide) { this.stopGuide(); return; }
-      const cycle = BREATH_CYCLE_MS / 1000;
+      const cycle = breathCycleMs() / 1000;
       const elapsed = (totalMs - getRemaining()) / 1000;
       if (this.guide) {
         const playingPhase = (this.context.currentTime - this.guide.startedAt + this.guide.offset) % cycle;
         const difference = Math.abs(playingPhase - elapsed % cycle);
-        if (Math.min(difference, cycle - difference) <= AUDIO.guideTolerance) return;
+        if (this.guide.pattern === settings.breathPattern && Math.min(difference, cycle - difference) <= AUDIO.guideTolerance) return;
         this.stopGuide();
       }
-      if (!this.guideBuffer) this.guideBuffer = this.createGuideBuffer();
+      if (!this.guideBuffer || this.guideBufferPattern !== settings.breathPattern) {
+        this.guideBuffer = this.createGuideBuffer();
+        this.guideBufferPattern = settings.breathPattern;
+      }
       const left = getRemaining();
       if (left === 0) { update(); return; }
       const context = this.context;
       const graph = this.createGraph();
       this.guide = graph;
+      graph.pattern = settings.breathPattern;
       const addNode = (node) => { graph.nodes.push(node); return node; };
       const source = addNode(context.createBufferSource());
       graph.sources.push(source);
@@ -704,6 +717,9 @@
     byId("volume").setAttribute("aria-valuetext", `${settings.volume}%`);
     byId("volume").disabled = settings.sound === "silent" && !settings.guide && !settings.bell;
     byId("guide-enabled").checked = settings.guide;
+    document.querySelectorAll('input[name="breath-pattern"]').forEach(input => { input.checked = input.value === settings.breathPattern; });
+    byId("breath-pattern-note").textContent = breathPattern().description;
+    byId("breath-description").textContent = `円は${breathPattern().description}の目安を示します。合わせずに、自然な呼吸で休んでも大丈夫です。`;
     byId("bell-enabled").checked = settings.bell;
     byId("screen-on").checked = settings.screenOn;
     byId("screen-on").disabled = !window.navigator?.wakeLock;
@@ -791,16 +807,17 @@
   function renderBreath() {
     if (motionPreference.matches) { circle.style.transform = "scale(1)"; circle.style.opacity = "0.85"; }
     if (state === "paused") { byId("breath-label").textContent = "ひと休み中"; return; }
-    const cycleTime = (totalMs - getRemaining()) % BREATH_CYCLE_MS;
+    const pattern = breathPattern();
+    const cycleTime = (totalMs - getRemaining()) % breathCycleMs();
     let scale = BREATH.maxScale;
     let label = "そのまま";
     const ease = (progress) => (1 - Math.cos(Math.PI * progress)) / 2;
-    if (cycleTime < BREATH.inhale) {
+    if (cycleTime < pattern.inhale) {
       label = "吸う";
-      scale = BREATH.minScale + (BREATH.maxScale - BREATH.minScale) * ease(cycleTime / BREATH.inhale);
-    } else if (cycleTime >= BREATH.inhale + BREATH.hold) {
+      scale = BREATH.minScale + (BREATH.maxScale - BREATH.minScale) * ease(cycleTime / pattern.inhale);
+    } else if (cycleTime >= pattern.inhale + pattern.hold) {
       label = "吐く";
-      const progress = (cycleTime - BREATH.inhale - BREATH.hold) / BREATH.exhale;
+      const progress = (cycleTime - pattern.inhale - pattern.hold) / pattern.exhale;
       scale = BREATH.maxScale - (BREATH.maxScale - BREATH.minScale) * ease(progress);
     }
     if (byId("breath-label").textContent !== label) byId("breath-label").textContent = label;
@@ -961,6 +978,14 @@
     syncSettings();
     if (state === "running") void audio.play();
     else audio.stop();
+  }));
+  document.querySelectorAll('input[name="breath-pattern"]').forEach(input => input.addEventListener("change", () => {
+    if (!Object.hasOwn(BREATH_PATTERNS, input.value)) return;
+    settings.breathPattern = input.value;
+    saveSettings();
+    syncSettings();
+    if (state === "running") { beginAnimation(); void audio.play(); }
+    else if (state === "paused") renderBreath();
   }));
   document.querySelectorAll('input[name="theme"]').forEach((input) => input.addEventListener("change", () => {
     settings.theme = input.value;

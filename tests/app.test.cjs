@@ -1080,3 +1080,59 @@ test("タブの時間表示も非表示設定に従い、停止状態と読み�
   app.click("pause-button"); assert.equal(app.document.title, "一時停止中 — yohaku");
   app.click("stop-button"); assert.equal(app.document.title, "yohaku — 何もしないための3分間");
 });
+
+for (const [pattern, inhale, hold, exhale] of [["original", 4, 2, 6], ["gentle", 4, 0, 6], ["equal", 4, 0, 4], ["slow", 5, 0, 5]]) {
+  test(`${pattern}の円・音の合図・ループ周期が一致する`, async () => {
+    const app = harness(); app.radio("breath-pattern", pattern); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+    const source = guideSources(app)[0], rate = source.buffer.sampleRate, samples = source.buffer.getChannelData(0);
+    assert.equal(source.buffer.duration, inhale + hold + exhale);
+    const energy = (start, end) => samples.slice(start * rate, end * rate).reduce((sum, value) => sum + value * value, 0);
+    assert.ok(energy(0, 1) > 1); assert.ok(energy(inhale + hold, inhale + hold + 1) > 1);
+    assert.equal(energy(1.2, inhale + hold), 0);
+    assert.equal(energy(inhale + hold + 1.2, inhale + hold + exhale), 0);
+    app.advance(inhale * 1000); assert.equal(app.byId("breath-label").textContent, hold ? "そのまま" : "吐く");
+    if (hold) { app.advance(hold * 1000); assert.equal(app.byId("breath-label").textContent, "吐く"); }
+    app.advance(exhale * 1000); assert.equal(app.byId("breath-label").textContent, "吸う");
+    app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every(node => node.disconnected));
+  });
+}
+
+test("同じ周期のリズム変更でも音の吐く位置を更新し、環境音と終了時刻を維持する", async () => {
+  const app = harness(); app.radio("breath-pattern", "gentle"); app.radio("sound", "rain"); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  const rain = app.audioNodes.find(node => node.kind === "source" && node.buffer.numberOfChannels === 2), original = guideSources(app)[0];
+  app.advance(4500); app.radio("breath-pattern", "slow"); await flush(); app.advance(500);
+  const next = guideSources(app).at(-1);
+  assert.ok(original.disconnected); assert.ok(!rain.disconnected); assert.equal(next.offsets[0], 4.5);
+  assert.equal(next.buffer.duration, 10); assert.equal(next.stops.at(-1), 180);
+  assert.notEqual(next.buffer, original.buffer); assert.equal(app.byId("breath-label").textContent, "吐く");
+  assert.equal(app.byId("timer").textContent, "02:55");
+  app.click("stop-button"); app.advance(500);
+});
+
+test("リズムを保存・復元し、壊れた選択は従来のリズムに戻す", () => {
+  const app = harness(); app.radio("breath-pattern", "equal");
+  const saved = app.storage.get("yohaku-settings-v1"); assert.equal(JSON.parse(saved).breathPattern, "equal");
+  const restored = harness({ saved }); assert.match(restored.byId("breath-pattern-note").textContent, /4秒吸う → 4秒吐く/);
+  assert.match(restored.byId("breath-description").textContent, /4秒吸う → 4秒吐く/);
+  assert.equal(restored.audioContexts.length, 0);
+  for (const value of [undefined, "toString", "missing", 5, null]) {
+    const invalid = harness({ saved: JSON.stringify({ breathPattern: value }) });
+    assert.match(invalid.byId("breath-pattern-note").textContent, /2秒そのまま/);
+  }
+});
+
+test("停止中にリズムを変更しても音は鳴らず、再開時は新周期で位相を合わせる", async () => {
+  const app = harness(); app.input("guide-enabled", true, "change"); app.click("start-button"); await flush();
+  app.advance(6500); app.click("pause-button"); app.advance(500); app.radio("breath-pattern", "equal"); await flush();
+  assert.equal(guideSources(app).length, 1); assert.ok(guideSources(app)[0].disconnected);
+  app.advance(1000); app.click("pause-button"); await flush();
+  assert.equal(guideSources(app).at(-1).offsets[0], 6.5); assert.equal(guideSources(app).at(-1).buffer.duration, 8);
+  assert.equal(app.byId("breath-label").textContent, "吐く"); app.click("stop-button"); app.advance(500);
+});
+
+test("音声準備中にリズムを変更した場合も、最後の選択だけを生成する", async () => {
+  const app = harness({ pendingResume: true }); app.input("guide-enabled", true, "change"); app.click("start-button");
+  app.radio("breath-pattern", "gentle"); app.radio("breath-pattern", "equal"); app.audioContexts[0].resolveResume(); await flush();
+  assert.equal(guideSources(app).length, 1); assert.equal(guideSources(app)[0].buffer.duration, 8);
+  app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every(node => node.disconnected));
+});

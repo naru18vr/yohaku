@@ -135,6 +135,7 @@ body:has(dialog[open]) { overflow: hidden; }
 .setting-group { margin: 24px 0; }
 .setting-group legend, .volume-heading label { font-size: 15px; margin-bottom: 11px; }
 .segmented-options { display: flex; gap: 6px; }
+.breath-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sound-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sound-options .segment-choice span { min-height: 54px; text-align: center; }
 .segment-choice { flex: 1; }
