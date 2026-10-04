@@ -20,7 +20,7 @@
     pink: "低い周波数ほど強くなるノイズです。",
     tone40: "聞こえる高さの音に、毎秒40回の強弱をつけた音です。純粋な40Hzの低音とは異なります。",
   };
-  const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
+  const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, screenOn: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
   const views = { home: byId("home-view"), session: byId("session-view"), complete: byId("complete-view") };
@@ -36,6 +36,10 @@
   let timeHidden = false;
   let lastSecond = -1;
   let settingsOpener = null;
+  let hiddenAt = null;
+  let hiddenRemaining = 0;
+  const clockNow = () => window.performance?.now() ?? Date.now();
+  const PAGE_TITLE = "yohaku — 何もしないための3分間";
 
   function loadSettings() {
     try {
@@ -47,6 +51,7 @@
         volume: Number.isFinite(saved.volume) ? Math.round(Math.min(100, Math.max(0, saved.volume))) : defaults.volume,
         guide: typeof saved.guide === "boolean" ? saved.guide : defaults.guide,
         bell: typeof saved.bell === "boolean" ? saved.bell : defaults.bell,
+        screenOn: typeof saved.screenOn === "boolean" ? saved.screenOn : defaults.screenOn,
         theme: ["auto", "light", "dark"].includes(saved.theme) ? saved.theme : defaults.theme,
       };
     } catch {
@@ -111,6 +116,7 @@
     onStateChange(context) {
       if (!context || context !== this.context) return;
       if (context.state !== "running") {
+        if (this.ambient?.crossfading) this.ambient.finishCrossfade();
         this.cancelBell();
         for (const graph of [...this.graphs]) if (graph !== this.ambient || context.state === "closed") this.disposeGraph(graph);
         if (this.wantsAudio && state === "running") showAudioNotice("音が止まっています。無音のままでも休めます。", true);
@@ -131,8 +137,13 @@
       const remaining = getRemaining();
       if (state !== "running" || remaining === 0) { if (state === "running") update(); return; }
       this.setVolume();
+      if (this.ambient) {
+        this.scheduleAmbientEnd(this.ambient, remaining);
+        this.resumeRecordedMedia(this.ambient);
+      }
       if (settings.bell) this.scheduleBell(remaining);
-      clearAudioNotice();
+      if (this.ambient?.mediaStarting) showAudioNotice("雨の音を読み込んでいます。", false);
+      else clearAudioNotice();
     }
 
     createGraph() {
@@ -150,9 +161,9 @@
         for (const slot of graph.mediaSlots || [{ media: graph.media }]) {
           const media = slot.media;
           media.onended = media.onerror = media.ontimeupdate = media.onloadedmetadata = media.oncanplay = null;
-          media.pause();
-          media.removeAttribute("src");
-          media.load();
+          try { media.pause(); } catch { /* 他の再生元とノードも必ず解放します。 */ }
+          try { media.removeAttribute("src"); } catch { /* 解放を続けます。 */ }
+          try { media.load(); } catch { /* 解放を続けます。 */ }
         }
       }
       for (const source of graph.sources) { try { source.stop(); } catch { /* 未開始・終了済みでも切断します。 */ } }
@@ -293,7 +304,7 @@
       graph.fadeIn = AUDIO.fadeIn;
       envelope.gain.setValueAtTime(0, graph.startedAt);
       envelope.gain.linearRampToValueAtTime(1, graph.startedAt + AUDIO.fadeIn);
-      source.connect(lowpass).connect(highpass).connect(texture).connect(volume).connect(envelope).connect(context.destination);
+      source.connect(lowpass).connect(highpass).connect(texture).connect(volume).connect(envelope).connect(this.createEndGate(graph));
       if (sound === "waves") {
         const swell = addNode(context.createOscillator());
         graph.sources.push(swell);
@@ -343,7 +354,7 @@
       graph.fadeIn = AUDIO.fadeIn;
       envelope.gain.setValueAtTime(0, graph.startedAt);
       envelope.gain.linearRampToValueAtTime(1, graph.startedAt + graph.fadeIn);
-      source.connect(texture).connect(volume).connect(envelope).connect(context.destination);
+      source.connect(texture).connect(volume).connect(envelope).connect(this.createEndGate(graph));
       source.onended = () => this.disposeGraph(graph);
       source.start();
     }
@@ -369,8 +380,15 @@
       graph.fadeIn = AUDIO.fadeIn;
       volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel * graph.volumeScale;
       envelope.gain.setValueAtTime(0, graph.startedAt);
-      envelope.gain.linearRampToValueAtTime(1, graph.startedAt + graph.fadeIn);
-      volume.connect(envelope).connect(context.destination);
+      // 再生準備が済むまで無音にし、実際に鳴り始めてからフェードインします。
+      const limiter = context.createDynamicsCompressor();
+      graph.nodes.push(limiter);
+      limiter.threshold.value = -6;
+      limiter.knee.value = 6;
+      limiter.ratio.value = 8;
+      limiter.attack.value = 0.003;
+      limiter.release.value = 0.2;
+      volume.connect(limiter).connect(envelope).connect(this.createEndGate(graph));
       graph.activeSlot = slot;
       this.attachRecordedSlot(graph, slot, true);
       graph.sources.push({ stop: (at = context.currentTime) => {
@@ -378,12 +396,55 @@
         window.clearTimeout(graph.mediaStopTask);
         graph.mediaStopTask = window.setTimeout(() => this.disposeGraph(graph), Math.max(0, at - context.currentTime) * 1000);
       } });
+      this.resumeRecordedMedia(graph);
+    }
+
+    createEndGate(graph) {
+      const gate = this.context.createGain();
+      graph.nodes.push(gate);
+      graph.endGate = gate;
+      gate.gain.value = 1;
+      gate.connect(this.context.destination);
+      return gate;
+    }
+
+    scheduleAmbientEnd(graph, left) {
+      const now = this.context.currentTime;
+      const stopAt = now + left / 1000;
+      if (graph.stopAt !== undefined && Math.abs(graph.stopAt - stopAt) < 0.05) return;
+      graph.stopAt = stopAt;
+      const gain = graph.endGate.gain;
+      gain.cancelScheduledValues(now);
+      gain.setValueAtTime(1, now);
+      gain.setValueAtTime(1, Math.max(now, stopAt - AUDIO.fadeOut));
+      gain.linearRampToValueAtTime(0, stopAt);
+      graph.sources.forEach(source => source.stop(stopAt));
+    }
+
+    resumeRecordedMedia(graph) {
+      if (!graph.media || graph.mediaStarting || !graph.media.paused) return;
+      graph.mediaStarting = true;
+      const media = graph.media;
       void media.play().then(() => {
+        graph.mediaStarting = false;
         if (graph.disposed || this.ambient !== graph || state !== "running") {
-          media.pause();
-          this.disposeGraph(graph);
+          try { media.pause(); } catch { /* 終了後に音を残しません。 */ }
+          this.disposeGraph(graph); return;
         }
-      }).catch(() => { if (!graph.disposed && this.ambient === graph && state === "running") this.fail(); });
+        if (this.context.state !== "running") {
+          try { media.pause(); } catch { /* 復帰時に再開します。 */ }
+          return;
+        }
+        const now = this.context.currentTime;
+        graph.startedAt = now;
+        graph.envelope.gain.cancelScheduledValues(now);
+        graph.envelope.gain.setValueAtTime(0, now);
+        graph.envelope.gain.linearRampToValueAtTime(1, now + graph.fadeIn);
+        clearAudioNotice();
+      }).catch(() => {
+        graph.mediaStarting = false;
+        if (!graph.disposed && this.ambient === graph && state === "running") this.fail();
+      });
     }
 
     attachRecordedSlot(graph, slot, active = false) {
@@ -448,11 +509,17 @@
           graph.crossfadeEnd = now + seconds;
           graph.finishCrossfade = () => {
             window.clearTimeout(graph.recordedBlendTask);
+            for (const slot of graph.mediaSlots) {
+              slot.gain.gain.cancelScheduledValues(this.context.currentTime);
+              slot.gain.gain.setValueAtTime(slot === graph.activeSlot ? 1 : 0, this.context.currentTime);
+            }
             media.pause();
             try { media.currentTime = 0; } catch { /* 再準備できなくても現在の録音を続けます。 */ }
             graph.crossfading = false;
           };
-          graph.recordedBlendTask = window.setTimeout(() => { if (!graph.disposed) graph.finishCrossfade(); }, seconds * 1000);
+          graph.recordedBlendTask = window.setTimeout(() => {
+            if (!graph.disposed && this.context.state === "running" && this.context.currentTime >= graph.crossfadeEnd - 0.02) graph.finishCrossfade();
+          }, seconds * 1000);
         } catch { if (!graph.disposed && this.ambient === graph) this.fail(); }
       }).catch(() => { graph.pendingCrossfade = false; next.failed = true; });
     }
@@ -623,6 +690,7 @@
     document.querySelectorAll('input[name="duration"]').forEach((input) => { input.checked = Number(input.value) === settings.minutes; });
     byId("custom-duration").value = settings.minutes;
     byId("duration-range").value = settings.minutes;
+    byId("duration-range").setAttribute("aria-valuetext", `${settings.minutes}分`);
     document.querySelectorAll('input[name="sound"]').forEach((input) => { input.checked = input.value === settings.sound; });
     document.querySelectorAll('input[name="theme"]').forEach((input) => { input.checked = input.value === settings.theme; });
     byId("start-label").textContent = `${settings.minutes}分休む`;
@@ -633,10 +701,49 @@
     byId("sound-description").hidden = !SOUND_DESCRIPTIONS[settings.sound];
     byId("volume").value = settings.volume;
     byId("volume-value").value = `${settings.volume}%`;
+    byId("volume").setAttribute("aria-valuetext", `${settings.volume}%`);
     byId("volume").disabled = settings.sound === "silent" && !settings.guide && !settings.bell;
     byId("guide-enabled").checked = settings.guide;
     byId("bell-enabled").checked = settings.bell;
+    byId("screen-on").checked = settings.screenOn;
+    byId("screen-on").disabled = !window.navigator?.wakeLock;
+    if (!window.navigator?.wakeLock) byId("screen-note").textContent = "このブラウザでは利用できません。";
     applyTheme();
+  }
+
+  const screenLock = { sentinel: null, pending: false, version: 0 };
+  async function syncScreenLock() {
+    const wanted = settings.screenOn && state === "running" && !document.hidden;
+    if (!wanted) {
+      screenLock.version++;
+      const held = screenLock.sentinel;
+      screenLock.sentinel = null;
+      if (window.navigator?.wakeLock) byId("screen-note").textContent = "画面ロックによる音の中断を減らします。";
+      if (held) { try { await held.release(); } catch { /* タイマーは継続します。 */ } }
+      return;
+    }
+    if (!window.navigator?.wakeLock || screenLock.sentinel || screenLock.pending) return;
+    const version = screenLock.version;
+    screenLock.pending = true;
+    try {
+      const held = await window.navigator.wakeLock.request("screen");
+      if (version !== screenLock.version || !settings.screenOn || state !== "running" || document.hidden) {
+        await held.release(); return;
+      }
+      screenLock.sentinel = held;
+      byId("screen-note").textContent = "休息中は画面をつけたままにします。";
+      held.addEventListener("release", () => {
+        if (screenLock.sentinel === held) {
+          screenLock.sentinel = null;
+          byId("screen-note").textContent = "画面の点灯が解除されました。端末の設定をご確認ください。";
+        }
+      });
+    } catch {
+      if (version === screenLock.version) byId("screen-note").textContent = "画面を保持できませんでした。端末の設定をご確認ください。";
+    } finally {
+      screenLock.pending = false;
+      if (version !== screenLock.version && settings.screenOn && state === "running" && !document.hidden) void syncScreenLock();
+    }
   }
 
   function showView(name, focusId) {
@@ -651,7 +758,24 @@
     animationFrame = 0;
   }
 
-  function getRemaining() { return state === "running" ? Math.max(0, Math.min(remainingMs, endTime - Date.now())) : remainingMs; }
+  function setRunningDeadline() {
+    endTime = clockNow() + remainingMs;
+    hiddenAt = document.hidden ? Date.now() : null;
+    hiddenRemaining = remainingMs;
+  }
+
+  function getRemaining() {
+    if (state !== "running") return remainingMs;
+    const activeClock = endTime - clockNow();
+    // 一部のOSで単調時計がスリープ中に進まない場合を、非表示中の実時刻で補います。
+    const hiddenClock = hiddenAt === null ? Infinity : hiddenRemaining - Math.max(0, Date.now() - hiddenAt);
+    return Math.max(0, Math.min(remainingMs, activeClock, hiddenClock));
+  }
+
+  function renderTitle() {
+    const status = state === "paused" ? "一時停止中" : state === "complete" ? "おつかれさま。" : state === "running" ? (timeHidden ? "休息中" : byId("timer").textContent) : "";
+    document.title = status ? `${status} — yohaku` : PAGE_TITLE;
+  }
 
   function renderTime() {
     const seconds = Math.ceil(getRemaining() / 1000);
@@ -661,6 +785,7 @@
     const remainder = (seconds % 60).toString().padStart(2, "0");
     byId("timer").textContent = `${minutes}:${remainder}`;
     byId("timer").setAttribute("aria-label", `残り${Math.floor(seconds / 60)}分${seconds % 60}秒`);
+    renderTitle();
   }
 
   function renderBreath() {
@@ -714,13 +839,14 @@
     state = "running";
     totalMs = settings.minutes * MINUTE_MS;
     remainingMs = totalMs;
-    endTime = Date.now() + remainingMs;
+    setRunningDeadline();
     lastSecond = -1;
     byId("pause-button").textContent = "一時停止";
     byId("session-title").textContent = "いまは、ただ休む。";
     showView("session", "session-title");
     byId("announcer").textContent = `${settings.minutes}分、休みます。呼吸は、あなたのペースで。`;
     void audio.play();
+    void syncScreenLock();
     update();
     beginAnimation();
   }
@@ -732,19 +858,23 @@
       state = "paused";
       cancelUpdates();
       audio.stop();
+      void syncScreenLock();
       clearAudioNotice();
       byId("pause-button").textContent = "再開する";
       byId("session-title").textContent = "このまま、ひと息。";
       renderTime();
       renderBreath();
+      renderTitle();
       byId("announcer").textContent = "一時停止しました。再開せずに終わっても大丈夫です。";
     } else if (state === "paused") {
       state = "running";
-      endTime = Date.now() + remainingMs;
+      setRunningDeadline();
       byId("pause-button").textContent = "一時停止";
       byId("session-title").textContent = "いまは、ただ休む。";
       byId("announcer").textContent = "休む時間を再開しました。";
       void audio.play();
+      void syncScreenLock();
+      renderTitle();
       update();
       beginAnimation();
     }
@@ -753,6 +883,8 @@
   function complete() {
     if (state !== "running") return;
     state = "complete";
+    void syncScreenLock();
+    renderTitle();
     remainingMs = 0;
     cancelUpdates();
     audio.stop(true);
@@ -763,6 +895,8 @@
 
   function goHome() {
     state = "home";
+    void syncScreenLock();
+    renderTitle();
     cancelUpdates();
     audio.stop();
     clearAudioNotice();
@@ -784,6 +918,7 @@
     byId("time-toggle").setAttribute("aria-pressed", String(timeHidden));
     if (timeHidden) byId("time-toggle").removeAttribute("aria-describedby");
     else byId("time-toggle").setAttribute("aria-describedby", "timer");
+    renderTitle();
   });
   function setMinutes(minutes) {
     if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_MINUTES) return;
@@ -813,6 +948,7 @@
     const previousVolume = settings.volume;
     settings.volume = Number(event.target.value);
     byId("volume-value").value = `${settings.volume}%`;
+    byId("volume").setAttribute("aria-valuetext", `${settings.volume}%`);
     saveSettings();
     if (state === "running") {
       if (previousVolume === 0 || settings.volume === 0 || !audio.ready || audio.context?.state !== "running") void audio.play();
@@ -831,6 +967,11 @@
     saveSettings();
     applyTheme();
   }));
+  byId("screen-on").addEventListener("change", (event) => {
+    settings.screenOn = event.target.checked;
+    saveSettings();
+    void syncScreenLock();
+  });
   document.querySelectorAll(".settings-trigger").forEach((button) => button.addEventListener("click", () => {
     settingsOpener = button;
     byId("settings-dialog").showModal();
@@ -846,10 +987,17 @@
   });
   document.addEventListener("visibilitychange", () => {
     if (state !== "running") return;
-    if (document.hidden) { window.cancelAnimationFrame(animationFrame); animationFrame = 0; }
+    if (document.hidden) {
+      hiddenRemaining = getRemaining();
+      hiddenAt = Date.now();
+      window.cancelAnimationFrame(animationFrame); animationFrame = 0;
+      void syncScreenLock();
+    }
     else {
+      remainingMs = getRemaining();
+      setRunningDeadline();
       update();
-      if (state === "running") { beginAnimation(); audio.onStateChange(audio.context); }
+      if (state === "running") { beginAnimation(); audio.onStateChange(audio.context); void syncScreenLock(); }
     }
   });
   window.addEventListener("pagehide", () => { if (state === "running") pauseOrResume(); audio.stop(); audio.disposeAll(); });

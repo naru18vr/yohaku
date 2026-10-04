@@ -12,7 +12,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 // ブラウザを置き換えるUIテストではなく、実際のイベント処理を動かすロジックテストです。
 function harness(options = {}) {
-  let now = 0, wallClockOffset = 0, nextTask = 1;
+  let now = 0, wallClockOffset = 0, nextTask = 1, sleepOffset = 0;
   const timers = new Map(), frames = new Map(), storage = new Map(), media = new Map();
   const audioContexts = [], audioNodes = [], mediaElements = [];
   const faults = { ...options.audioFaults };
@@ -111,8 +111,18 @@ function harness(options = {}) {
     createBiquadFilter() { return node("filter", this); }
     createGain() { return node("gain", this); }
     createOscillator() { return node("oscillator", this); }
+    createDynamicsCompressor() { const result = node("compressor", this); for (const key of ["threshold", "knee", "ratio", "attack", "release"]) result[key] = param(); return result; }
   }
+  const wakeLocks = [];
   const window = {
+    performance: { now: () => now - sleepOffset },
+    navigator: options.wakeLock ? { wakeLock: { request() {
+      if (options.wakeFailure) return Promise.reject(new Error("refused"));
+      const held = { released: false, listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, release() { this.released = true; this.listeners.release?.(); return Promise.resolve(); } };
+      wakeLocks.push(held);
+      if (options.pendingWake) return new Promise(resolve => { held.resolve = () => resolve(held); });
+      return Promise.resolve(held);
+    } } } : {},
     Audio: class {
       constructor(src) { this.src = src; this.paused = true; this.duration = 660; this.currentTime = 0; this.readyState = 4; this.playCalls = 0; mediaElements.push(this); }
       play() {
@@ -145,7 +155,7 @@ function harness(options = {}) {
   const math = options.random ? Object.assign(Object.create(Math), { random: options.random }) : Math;
   vm.runInNewContext(script, { window, document, localStorage, Date: ClockDate, Math: math, console });
   return {
-    byId, storage, audioContexts, audioNodes, mediaElements, timers, frames, document, faults, endAudio,
+    byId, storage, audioContexts, audioNodes, mediaElements, timers, frames, document, faults, endAudio, wakeLocks,
     click(id) { byId(id).dispatch("click"); },
     openSettings() { const button = selectAll(".settings-trigger").find((element) => !element.closest("[hidden]")); button.dispatch("click"); return button; },
     radio(name, value) { const group = selectAll(`input[name="${name}"]`); group.forEach((element) => { element.checked = element.value === String(value); }); group.find((element) => element.checked).dispatch("change"); },
@@ -161,6 +171,7 @@ function harness(options = {}) {
     },
     jump(ms) { now += ms; for (const [id, task] of [...timers]) if (task.at <= now) { timers.delete(id); task.fn(); } endAudio(); },
     shiftWallClock(ms) { wallClockOffset += ms; },
+    sleep(ms) { now += ms; sleepOffset += ms; },
     elapseWithoutCallbacks(ms) { now += ms; },
     visibility(hidden) { document.hidden = hidden; document.dispatch("visibilitychange"); },
     media(query, matches) { const preference = media.get(query); preference.matches = matches; preference.listener(); },
@@ -231,7 +242,7 @@ test("60分でも全ての合成音のループを再生成せず、ガイド・
     const ambient = app.audioNodes.find(node => node.kind === "source" && node.buffer.numberOfChannels === 2);
     app.visibility(true); app.elapseWithoutCallbacks(30 * 60_000); app.visibility(false); await flush();
     assert.equal(app.byId("timer").textContent, "30:00");
-    assert.equal(ambient.starts.length, 1); assert.equal(ambient.stops.length, 0);
+    assert.equal(ambient.starts.length, 1); assert.equal(ambient.stops.at(-1), 3600);
     assert.equal(app.audioNodes.filter(node => node.kind === "source" && node.buffer.numberOfChannels === 2).length, 1);
     app.advance(30 * 60_000); app.advance(3500); await flush();
     assert.equal(app.byId("complete-view").hidden, false);
@@ -641,7 +652,7 @@ test("ベルのON/OFFと音量変更で環境音を不要に再生成しない",
   app.input("bell-enabled", true, "change"); await flush();
   app.input("volume", 60); app.input("bell-enabled", false, "change"); await flush();
   assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 1);
-  assert.equal(source.stops.length, 0);
+  assert.equal(source.stops.at(-1), 180);
   assert.ok(app.audioNodes.filter((node) => node.kind === "oscillator").every((node) => node.disconnected));
   app.radio("sound", "silent"); await flush(); app.advance(500);
   assert.equal(app.audioContexts[0].state, "suspended");
@@ -704,17 +715,14 @@ test("音声準備中に設定を連続変更しても最後の選択だけを�
   assert.equal(app.audioNodes.filter((node) => node.kind === "oscillator").length, 4);
 });
 
-test("時計が巻き戻っても残り時間や呼吸の位相が逆行しない", () => {
+test("端末の時刻を変更しても単調時計で残り時間を進める", () => {
   const app = harness(); app.click("start-button"); app.advance(8000);
   assert.equal(app.byId("timer").textContent, "02:52");
-  const scale = app.byId("breathing-circle").style.transform;
-  app.shiftWallClock(-3_600_000); app.advance(200);
-  assert.equal(app.byId("timer").textContent, "02:52");
-  assert.equal(app.byId("breathing-circle").style.transform, scale);
-  app.shiftWallClock(3_600_000); app.advance(200);
-  assert.equal(app.byId("timer").textContent, "02:52");
-  app.shiftWallClock(180_000); app.advance(200);
-  assert.equal(app.byId("complete-view").hidden, false);
+  app.shiftWallClock(-3_600_000); app.advance(1000);
+  assert.equal(app.byId("timer").textContent, "02:51");
+  app.shiftWallClock(3_780_000); app.advance(1000);
+  assert.equal(app.byId("timer").textContent, "02:50");
+  assert.equal(app.byId("complete-view").hidden, true);
 });
 
 test("停止中に動きを減らす設定へ切り替えた場合も、円を静止状態にする", () => {
@@ -801,7 +809,7 @@ test("環境音のループ境界でノイズの密度が落ちず、画面更�
     assert.ok(samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1));
   }
   app.visibility(true); app.elapseWithoutCallbacks(75_000);
-  assert.equal(source.starts.length, 1); assert.equal(source.stops.length, 0);
+  assert.equal(source.starts.length, 1); assert.equal(source.stops.at(-1), 180);
   app.visibility(false);
   assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 1);
   assert.equal(app.byId("timer").textContent, "01:45");
@@ -889,10 +897,10 @@ test("呼吸ガイドの切り替え・音量・ベル変更で環境音とガ�
   const guide = guideSources(app)[0]; assert.equal(guide.offsets[0], 8.5);
   app.input("volume", 60); app.input("bell-enabled", true, "change"); await flush();
   app.input("bell-enabled", false, "change"); await flush();
-  assert.equal(guideSources(app).length, 1); assert.equal(rain.stops.length, 0);
+  assert.equal(guideSources(app).length, 1); assert.equal(rain.stops.at(-1), 180);
   assert.ok(!guide.disconnected);
   app.input("guide-enabled", false, "change"); await flush(); app.advance(500);
-  assert.ok(guide.disconnected); assert.ok(!rain.disconnected); assert.equal(rain.stops.length, 0);
+  assert.ok(guide.disconnected); assert.ok(!rain.disconnected); assert.equal(rain.stops.at(-1), 180);
 });
 
 test("音量0ではガイドも無音になり、音量を戻すと現在の呼吸の位相から再開する", async () => {
@@ -958,4 +966,117 @@ test("ガイドと終了ベルを併用しても一度だけ終了し、余韻�
   app.click("restart-button"); await flush();
   assert.equal(guideSources(app).at(-1).offsets[0], 0);
   app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("更新処理が止まっても全ての合成環境音を期限に停止する", async () => {
+  for (const sound of ["rain", "waves", "fire", "white", "pink", "tone40"]) {
+    const app = harness(); app.radio("duration", 1); app.radio("sound", sound); app.click("start-button"); await flush();
+    const source = app.audioNodes.find(node => node.kind === "source");
+    assert.equal(source.stops.at(-1), 60);
+    app.elapseWithoutCallbacks(60_000); app.endAudio();
+    assert.ok(source.ended); assert.ok(app.audioNodes.every(node => node.disconnected));
+    app.visibility(false); assert.equal(app.byId("complete-view").hidden, false);
+  }
+});
+
+test("録音にも音声時計の終了ゲートを置き、更新停止中に音を残さない", async () => {
+  const app = harness(); app.radio("duration", 1); app.radio("sound", "rain2"); app.click("start-button"); await flush();
+  const gate = app.audioNodes.find(node => node.kind === "gain" && node.connections.includes(app.audioContexts[0].destination));
+  assert.deepEqual(gate.gain.values.slice(-2), [{ value: 1, at: 0 }, { value: 1, at: 59.55 }]);
+  assert.equal(gate.gain.value, 0);
+  app.elapseWithoutCallbacks(60_000); app.visibility(false); app.advance(500);
+  assert.ok(app.mediaElements.every(media => media.paused && !media.src));
+});
+
+test("音声中断から復帰したら環境音の終了予約を残り時間へ補正する", async () => {
+  const app = harness(); app.radio("duration", 1); app.radio("sound", "rain"); app.click("start-button"); await flush();
+  const context = app.audioContexts[0], source = app.audioNodes.find(node => node.kind === "source");
+  app.advance(5000); context.changeState("interrupted"); app.advance(20_000); context.changeState("running");
+  assert.equal(source.stops.at(-1), 40);
+  app.elapseWithoutCallbacks(35_000); app.endAudio(); assert.ok(source.ended);
+});
+
+test("録音の読み込み完了後からフェードし、中断中の遅い完了は再開まで待つ", async () => {
+  const app = harness({ pendingMedia: true }); app.radio("sound", "rain2"); app.click("start-button"); await flush();
+  const envelope = app.audioNodes.find(node => node.kind === "compressor").connections[0];
+  assert.equal(envelope.gain.value, 0); assert.match(app.byId("audio-notice").textContent, /読み込/);
+  app.advance(6000); app.audioContexts[0].changeState("interrupted"); app.mediaElements[0].resolvePlay(); await flush();
+  assert.ok(app.mediaElements[0].paused); assert.equal(envelope.gain.value, 0);
+  app.advance(2000); app.audioContexts[0].changeState("running");
+  app.mediaElements[0].resolvePlay(); await flush();
+  assert.equal(envelope.gain.values.at(-1).at, 6); assert.equal(envelope.gain.value, 1);
+  app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every(node => node.disconnected));
+});
+
+test("録音が端末に止められた場合も復帰時に再生を再開する", async () => {
+  const app = harness(); app.radio("sound", "rain2"); app.click("start-button"); await flush();
+  const media = app.mediaElements[0]; media.pause(); app.audioContexts[0].changeState("interrupted");
+  app.advance(3000); app.audioContexts[0].changeState("running"); await flush();
+  assert.equal(media.playCalls, 2); assert.equal(media.paused, false);
+  const compressor = app.audioNodes.find(node => node.kind === "compressor");
+  assert.equal(compressor.threshold.value, -6); assert.equal(compressor.ratio.value, 8);
+  const volume = app.audioNodes.find(node => node.connections.includes(compressor));
+  assert.equal(volume.gain.value, 0.35 * 0.45 * 4);
+});
+
+test("録音の停止に例外があっても他の解放処理を実行する", async () => {
+  const app = harness(); app.radio("sound", "rain2"); app.click("start-button"); await flush();
+  app.mediaElements[0].pause = () => { throw new Error("media pause failed"); };
+  app.click("stop-button"); app.advance(500); assert.equal(app.mediaElements[0].src, "");
+  assert.ok(app.mediaElements[0].loaded); assert.ok(app.audioNodes.every(node => node.disconnected));
+});
+
+test("録音クロスフェード中の中断は二重再生と残ったゲイン予約を解消する", async () => {
+  const app = harness(); app.radio("sound", "rain2"); app.click("start-button"); await flush();
+  const first = app.mediaElements[0]; first.currentTime = 657; first.ontimeupdate(); await flush();
+  assert.equal(app.mediaElements.length, 2); assert.equal(app.mediaElements[1].paused, false);
+  app.audioContexts[0].changeState("interrupted");
+  assert.equal(first.paused, true);
+  const slots = app.audioNodes.filter(node => node.kind === "media-source");
+  assert.equal(slots[0].connections[0].gain.value, 0); assert.equal(slots[1].connections[0].gain.value, 1);
+  app.advance(5000); app.audioContexts[0].changeState("running"); await flush();
+  assert.equal(first.paused, true); assert.equal(app.mediaElements[1].paused, false);
+  app.click("stop-button"); app.advance(500); assert.ok(app.audioNodes.every(node => node.disconnected));
+});
+
+test("画面保持の許可待ち中に再開しても古い許可を使わず再取得する", async () => {
+  const app = harness({ wakeLock: true, pendingWake: true }); app.input("screen-on", true, "change"); app.click("start-button");
+  app.click("pause-button"); app.click("pause-button"); app.wakeLocks[0].resolve(); await flush();
+  assert.ok(app.wakeLocks[0].released); assert.equal(app.wakeLocks.length, 2);
+  app.wakeLocks[1].resolve(); await flush(); assert.equal(app.wakeLocks[1].released, false);
+  app.click("stop-button"); await flush(); assert.ok(app.wakeLocks[1].released);
+});
+
+test("画面保持は任意で、停止・非表示・終了で解放し復帰時に再取得する", async () => {
+  const app = harness({ wakeLock: true }); app.radio("duration", 1); app.click("start-button"); await flush();
+  assert.equal(app.wakeLocks.length, 0);
+  app.input("screen-on", true, "change"); await flush(); assert.equal(app.wakeLocks.length, 1);
+  app.visibility(true); await flush(); assert.ok(app.wakeLocks[0].released);
+  app.visibility(false); await flush(); assert.equal(app.wakeLocks.length, 2);
+  app.click("pause-button"); await flush(); assert.ok(app.wakeLocks[1].released);
+  app.click("pause-button"); await flush(); assert.equal(app.wakeLocks.length, 3);
+  app.advance(60_000); await flush(); assert.ok(app.wakeLocks[2].released);
+});
+
+test("遅れて許可された画面保持は停止後に解放し、拒否時もタイマーを続ける", async () => {
+  const app = harness({ wakeLock: true, pendingWake: true }); app.input("screen-on", true, "change"); app.click("start-button");
+  app.click("stop-button"); app.wakeLocks[0].resolve(); await flush(); assert.ok(app.wakeLocks[0].released);
+  const refused = harness({ wakeLock: true, wakeFailure: true }); refused.input("screen-on", true, "change"); refused.click("start-button"); await flush();
+  assert.match(refused.byId("screen-note").textContent, /保持できません/); refused.advance(1000); assert.equal(refused.byId("timer").textContent, "02:59");
+  const unsupported = harness(); assert.ok(unsupported.byId("screen-on").disabled);
+});
+
+test("OSスリープ中に単調時計が停止しても、画面復帰時は経過時間を反映する", () => {
+  const app = harness(); app.radio("duration", 1); app.click("start-button"); app.visibility(true); app.sleep(70_000); app.visibility(false);
+  assert.equal(app.byId("complete-view").hidden, false);
+});
+
+test("タブの時間表示も非表示設定に従い、停止状態と読み上げ値を更新する", () => {
+  const app = harness(); app.input("duration-range", 17);
+  assert.equal(app.byId("duration-range").getAttribute("aria-valuetext"), "17分");
+  app.input("volume", 67); assert.equal(app.byId("volume").getAttribute("aria-valuetext"), "67%");
+  app.click("start-button"); assert.equal(app.document.title, "17:00 — yohaku");
+  app.click("time-toggle"); assert.equal(app.document.title, "休息中 — yohaku");
+  app.click("pause-button"); assert.equal(app.document.title, "一時停止中 — yohaku");
+  app.click("stop-button"); assert.equal(app.document.title, "yohaku — 何もしないための3分間");
 });

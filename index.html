@@ -23,8 +23,8 @@
   <link rel="icon" href="assets/icons/icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=20261004-11">
-  <script src="app.js?v=20261004-11" defer></script>
+  <link rel="stylesheet" href="style.css?v=20261004-12">
+  <script src="app.js?v=20261004-12" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">休む画面へ</a>
@@ -103,6 +103,7 @@
     <label class="audio-switch"><span><span id="guide-label">呼吸の音ガイド</span><span id="guide-note" class="setting-note">吸い始めに少し高い音、吐き始めに少し低い音。間は静かに。あなたのペースで。</span></span><input id="guide-enabled" type="checkbox" role="switch" aria-labelledby="guide-label" aria-describedby="guide-note"><span class="switch-track" aria-hidden="true"></span></label>
     <div class="setting-group volume-group"><div class="volume-heading"><label for="volume">音量</label><output id="volume-value" for="volume">35%</output></div><input id="volume" type="range" min="0" max="100" value="35" step="1" disabled aria-describedby="volume-note"><p id="volume-note" class="setting-note">はじめは小さな音から。</p></div>
     <label class="audio-switch"><span><span id="bell-label">終わりのベル</span><span id="bell-note" class="setting-note">最後に、小さく一度だけ。</span></span><input id="bell-enabled" type="checkbox" role="switch" aria-labelledby="bell-label" aria-describedby="bell-note"><span class="switch-track" aria-hidden="true"></span></label>
+    <label class="audio-switch"><span><span id="screen-label">休息中は画面を消さない</span><span id="screen-note" class="setting-note">画面ロックによる音の中断を減らします。</span></span><input id="screen-on" type="checkbox" role="switch" aria-labelledby="screen-label" aria-describedby="screen-note"><span class="switch-track" aria-hidden="true"></span></label>
     <fieldset class="setting-group theme-group"><legend>画面の明るさ</legend><div class="segmented-options">
       <label class="segment-choice"><input type="radio" name="theme" value="auto" checked><span>端末に合わせる</span></label>
       <label class="segment-choice"><input type="radio" name="theme" value="light"><span>明るめ</span></label>

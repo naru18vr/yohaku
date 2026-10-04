@@ -129,7 +129,7 @@ main { flex: 1; display: flex; flex-direction: column; align-items: center; just
 dialog { width: min(calc(100% - 32px), 440px); max-height: calc(100% - 48px); margin: auto; padding: 26px 28px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 16px 80px rgba(20, 31, 22, .12); overflow-y: auto; overscroll-behavior: contain; }
 dialog::backdrop { background: var(--overlay); }
 body:has(dialog[open]) { overflow: hidden; }
-.dialog-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+.dialog-heading { position: sticky; top: 0; z-index: 2; background: var(--surface); display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
 .dialog-heading h2 { font-size: 20px; font-weight: 500; margin: 0; letter-spacing: .06em; }
 .icon-button { display: grid; place-items: center; width: 44px; height: 44px; margin-right: -10px; border: 0; border-radius: 50%; background: transparent; }
 .setting-group { margin: 24px 0; }
@@ -208,6 +208,8 @@ input[type="range"]:disabled { opacity: .4; }
   main { padding-top: 18px; padding-bottom: 12px; }
   .welcome-title { font-size: 23px; line-height: 1.65; }
   .home-orb, .complete-orb { width: 150px; height: 150px; margin-top: 12px; margin-bottom: 14px; }
+  .home-orb { display: none; }
+  .home-actions { margin-top: 18px; }
   .session-orb { width: 150px; height: 150px; }
   .session-title { margin-bottom: 10px; }
   .breath-note { margin-top: 6px; }
