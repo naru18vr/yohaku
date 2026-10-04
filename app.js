@@ -9,6 +9,15 @@
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
   const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
   const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波", fire: "焚き火", white: "ホワイトノイズ", pink: "ピンクノイズ", tone40: "40Hz" };
+  const SOUND_DESCRIPTIONS = {
+    rain: "雨を模した合成音です。",
+    rain2: "提供された雨音の録音です。",
+    waves: "波を模した合成音です。",
+    fire: "焚き火を模した合成音です。",
+    white: "周波数ごとの強さがほぼ均一なノイズです。",
+    pink: "低い周波数ほど強くなるノイズです。",
+    tone40: "40Hzの低い連続音です。聞こえにくい場合は低音対応のイヤホン・ヘッドホンでお試しください。",
+  };
   const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
@@ -281,7 +290,7 @@
         source.loop = true;
       }
       const texture = addNode(context.createGain());
-      texture.gain.value = sound === "tone40" ? 0.18 : sound === "fire" ? 0.7 : 1;
+      texture.gain.value = sound === "tone40" ? 0.72 : sound === "fire" ? 0.7 : 1;
       const volume = addNode(context.createGain());
       graph.volume = volume;
       volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
@@ -505,6 +514,8 @@
     byId("restart-button").textContent = `もう${settings.minutes}分休む`;
     const soundLabel = settings.guide ? (settings.sound === "silent" ? "呼吸ガイド" : `${SOUND_NAMES[settings.sound]}・ガイド`) : SOUND_NAMES[settings.sound];
     document.querySelectorAll(".sound-label").forEach((label) => { label.textContent = soundLabel; });
+    byId("sound-description").textContent = SOUND_DESCRIPTIONS[settings.sound] || "";
+    byId("sound-description").hidden = !SOUND_DESCRIPTIONS[settings.sound];
     byId("volume").value = settings.volume;
     byId("volume-value").value = `${settings.volume}%`;
     byId("volume").disabled = settings.sound === "silent" && !settings.guide && !settings.bell;

@@ -400,6 +400,26 @@ test("白・ピンクの音色を分け、焚き火には不規則な破裂音�
   assert.ok(Math.max(...energies) > Math.min(...energies) * 3);
 });
 
+test("40Hzは純粋な低音を十分なレベルで出力し、説明を表示する", async () => {
+  const app = harness(); app.radio("sound", "tone40"); app.click("start-button"); await flush();
+  const sources = app.audioNodes.filter(node => node.kind === "oscillator");
+  assert.equal(sources.length, 1); assert.equal(sources[0].frequency.value, 40); assert.equal(sources[0].type, "sine");
+  const texture = sources[0].connections[0];
+  const volume = texture.connections[0];
+  assert.ok(Math.abs(texture.gain.value * volume.gain.value - 0.1134) < 0.00001);
+  app.input("volume", 100); await flush();
+  assert.ok(Math.abs(texture.gain.value * volume.gain.value - 0.324) < 0.00001);
+  assert.match(app.byId("sound-description").textContent, /40Hz/);
+  for (const sound of ["rain", "waves", "fire"]) {
+    app.radio("sound", sound); await flush();
+    assert.match(app.byId("sound-description").textContent, /合成音/);
+  }
+  app.radio("sound", "rain2"); await flush();
+  assert.match(app.byId("sound-description").textContent, /録音/);
+  app.radio("sound", "silent"); await flush();
+  assert.equal(app.byId("sound-description").hidden, true);
+});
+
 test("追加音の切り替えと生成失敗でも、音を残さずタイマーを継続する", async () => {
   const app = harness(); app.click("start-button");
   for (const sound of ["fire", "white", "pink", "tone40", "rain", "rain2", "silent"]) {
