@@ -8,7 +8,7 @@
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
   const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
-  const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波" };
+  const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨 fugisako ver", waves: "波", fire: "焚き火", white: "ホワイトノイズ", pink: "ピンクノイズ", tone40: "40Hz" };
   const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
@@ -51,6 +51,7 @@
     constructor() {
       this.context = null;
       this.noiseBuffer = null;
+      this.extraBuffers = new Map();
       this.guideBuffer = null;
       this.ambient = null;
       this.guide = null;
@@ -81,6 +82,7 @@
           const context = new Context();
           this.context = context;
           this.noiseBuffer = null;
+          this.extraBuffers.clear();
           this.guideBuffer = null;
           context.addEventListener("statechange", () => this.onStateChange(context));
         }
@@ -164,7 +166,7 @@
       if (state === "running") showAudioNotice("音を再生できませんでした。無音のままでも休めます。", true);
     }
 
-    createNoiseBuffer() {
+    createNoiseBuffer(kind = "pink") {
       const context = this.context;
       const length = Math.round(context.sampleRate * AUDIO.noiseDuration);
       const blendLength = Math.round(context.sampleRate * AUDIO.noiseBlend);
@@ -181,8 +183,29 @@
           b3 = 0.8665 * b3 + white * 0.3104856;
           b4 = 0.55 * b4 + white * 0.5329522;
           b5 = -0.7616 * b5 - white * 0.016898;
-          if (i >= 0) noise[i] = Math.max(-1, Math.min(1, (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11));
+          if (i >= 0) noise[i] = kind === "white" ? white * 0.24 : Math.max(-1, Math.min(1, (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11));
           b6 = white * 0.115926;
+        }
+        if (kind === "fire") {
+          let rumble = 0;
+          for (let i = 0; i < noise.length; i++) {
+            rumble = rumble * 0.985 + noise[i] * 0.015;
+            noise[i] = rumble * 1.4 + noise[i] * 0.18;
+          }
+          // 不規則な短い破裂音を、低い燃焼音へ重ねます。
+          for (let i = 0; i < noise.length; i++) {
+            if (Math.random() >= 5 / context.sampleRate) continue;
+            const duration = 0.008 + Math.random() * 0.045;
+            const count = Math.round(duration * context.sampleRate);
+            const strength = 0.15 + Math.random() * 0.45;
+            const frequency = 300 + Math.random() * 1500;
+            for (let j = 0; j < count && i + j < noise.length; j++) {
+              const t = j / context.sampleRate;
+              const envelope = Math.min(1, t / 0.001) * Math.exp(-6 * t / duration);
+              noise[i + j] += strength * envelope * ((Math.random() * 2 - 1) * 0.75 + Math.sin(2 * Math.PI * frequency * t) * 0.25);
+            }
+          }
+          for (let i = 0; i < noise.length; i++) noise[i] = Math.max(-1, Math.min(1, noise[i]));
         }
         samples.set(noise.subarray(0, length));
         // 末尾に続くノイズを先頭へ重ね、つなぎ目でも音の密度を保ちます。
@@ -196,6 +219,7 @@
 
     startAmbient(sound) {
       if (sound === "rain2") { this.startRecordedRain(); return; }
+      if (["fire", "white", "pink", "tone40"].includes(sound)) { this.startExtraAmbient(sound); return; }
       const context = this.context;
       if (!this.noiseBuffer) this.noiseBuffer = this.createNoiseBuffer();
       const graph = this.createGraph();
@@ -236,6 +260,38 @@
         swell.connect(depth).connect(texture.gain);
         swell.start();
       }
+      source.onended = () => this.disposeGraph(graph);
+      source.start();
+    }
+
+    startExtraAmbient(sound) {
+      const context = this.context;
+      const graph = this.createGraph();
+      this.ambient = graph;
+      graph.sound = sound;
+      const addNode = (node) => { graph.nodes.push(node); return node; };
+      const source = addNode(sound === "tone40" ? context.createOscillator() : context.createBufferSource());
+      graph.sources.push(source);
+      if (sound === "tone40") {
+        source.type = "sine";
+        source.frequency.value = 40;
+      } else {
+        if (!this.extraBuffers.has(sound)) this.extraBuffers.set(sound, this.createNoiseBuffer(sound));
+        source.buffer = this.extraBuffers.get(sound);
+        source.loop = true;
+      }
+      const texture = addNode(context.createGain());
+      texture.gain.value = sound === "tone40" ? 0.18 : sound === "fire" ? 0.7 : 1;
+      const volume = addNode(context.createGain());
+      graph.volume = volume;
+      volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
+      const envelope = addNode(context.createGain());
+      graph.envelope = envelope;
+      graph.startedAt = context.currentTime;
+      graph.fadeIn = AUDIO.fadeIn;
+      envelope.gain.setValueAtTime(0, graph.startedAt);
+      envelope.gain.linearRampToValueAtTime(1, graph.startedAt + graph.fadeIn);
+      source.connect(texture).connect(volume).connect(envelope).connect(context.destination);
       source.onended = () => this.disposeGraph(graph);
       source.start();
     }

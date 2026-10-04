@@ -354,6 +354,67 @@ test("雨 fugisako verを音量0で開始しても読込まず、終了時に録
   assert.equal(saved.mediaElements.length, 0);
 });
 
+for (const sound of ["fire", "white", "pink", "tone40"]) test(`${sound}は開始後だけ鳴り、設定保存・音量・停止・再開・終了に対応する`, async () => {
+  const app = harness({ random: seededRandom(21) }); app.radio("duration", 1); app.radio("sound", sound);
+  assert.equal(app.audioContexts.length, 0);
+  const saved = app.storage.get("yohaku-settings-v1");
+  assert.equal(JSON.parse(saved).sound, sound);
+  const restored = harness({ saved }); assert.equal(restored.byId("volume").disabled, false);
+  app.click("start-button"); await flush();
+  const source = app.audioNodes.find((node) => node.kind === (sound === "tone40" ? "oscillator" : "source"));
+  assert.equal(source.starts.length, 1);
+  if (sound === "tone40") { assert.equal(source.type, "sine"); assert.equal(source.frequency.value, 40); }
+  else { assert.equal(source.loop, true); assert.equal(source.buffer.numberOfChannels, 2); }
+  app.input("volume", 70); await flush();
+  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.315) < 0.00001));
+  assert.equal(source.starts.length, 1);
+  app.click("pause-button"); app.advance(500); await flush();
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  app.click("pause-button"); await flush();
+  const replacement = app.audioNodes.filter((node) => node.kind === source.kind).at(-1);
+  if (sound !== "tone40") assert.equal(replacement.buffer, source.buffer);
+  app.advance(60_000); app.advance(500); await flush();
+  assert.equal(app.byId("complete-view").hidden, false);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("白・ピンクの音色を分け、焚き火には不規則な破裂音を含める", async () => {
+  const data = {};
+  for (const sound of ["white", "pink", "fire"]) {
+    const app = harness({ random: seededRandom(42) }); app.radio("sound", sound); app.click("start-button"); await flush();
+    const buffer = app.audioNodes.find((node) => node.kind === "source").buffer;
+    const samples = buffer.getChannelData(0);
+    assert.ok(samples.every(sample => Number.isFinite(sample) && Math.abs(sample) <= 1));
+    let energy = 0, adjacent = 0;
+    for (let i = buffer.sampleRate; i < samples.length - 1; i++) { energy += samples[i] ** 2; adjacent += samples[i] * samples[i + 1]; }
+    data[sound] = { correlation: adjacent / energy, samples, rate: buffer.sampleRate };
+  }
+  assert.ok(Math.abs(data.white.correlation) < 0.03);
+  assert.ok(data.pink.correlation > 0.5);
+  const energies = [];
+  for (let start = data.fire.rate; start < data.fire.samples.length - data.fire.rate / 10; start += data.fire.rate / 10) {
+    let energy = 0;
+    for (let i = start; i < start + data.fire.rate / 10; i++) energy += data.fire.samples[i] ** 2;
+    energies.push(energy);
+  }
+  assert.ok(Math.max(...energies) > Math.min(...energies) * 3);
+});
+
+test("追加音の切り替えと生成失敗でも、音を残さずタイマーを継続する", async () => {
+  const app = harness(); app.click("start-button");
+  for (const sound of ["fire", "white", "pink", "tone40", "rain", "rain2", "silent"]) {
+    app.radio("sound", sound); await flush(); app.advance(500);
+  }
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  for (const sound of ["fire", "white", "pink", "tone40"]) {
+    const failed = harness({ audioFaults: { createAt: 1 } }); failed.radio("duration", 1); failed.radio("sound", sound);
+    failed.click("start-button"); await flush();
+    assert.equal(failed.byId("audio-notice").hidden, false);
+    assert.ok(failed.audioNodes.every(node => node.disconnected));
+    failed.advance(60_000); assert.equal(failed.byId("complete-view").hidden, false);
+  }
+});
+
 test("ベルは明示的ONの時だけ一度予約し、停止・再開で旧ベルを取り消す", async () => {
   const app = harness(); app.input("bell-enabled", true, "change"); app.click("start-button"); await flush();
   let bells = app.audioNodes.filter((node) => node.kind === "oscillator");
