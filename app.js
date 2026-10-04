@@ -8,7 +8,7 @@
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
   const GUIDE = { inhaleFrequency: 523.25, exhaleFrequency: 392, cueDuration: 1.1, attack: 0.12 };
-  const SOUND_NAMES = { silent: "無音", rain: "雨", waves: "波" };
+  const SOUND_NAMES = { silent: "無音", rain: "雨", rain2: "雨音2", waves: "波" };
   const defaults = { minutes: 3, sound: "silent", volume: 35, guide: false, bell: false, theme: "auto" };
   const byId = (id) => document.getElementById(id);
   const settings = loadSettings();
@@ -131,6 +131,14 @@
     disposeGraph(graph) {
       if (!graph || graph.disposed) return;
       graph.disposed = true;
+      if (graph.media) {
+        window.clearTimeout(graph.mediaStopTask);
+        graph.media.onended = null;
+        graph.media.onerror = null;
+        graph.media.pause();
+        graph.media.removeAttribute("src");
+        graph.media.load();
+      }
       for (const source of graph.sources) { try { source.stop(); } catch { /* 未開始・終了済みでも切断します。 */ } }
       for (const node of graph.nodes) { try { node.disconnect(); } catch { /* 切断済みのノードは無視します。 */ } }
       this.graphs.delete(graph);
@@ -187,6 +195,7 @@
     }
 
     startAmbient(sound) {
+      if (sound === "rain2") { this.startRecordedRain(); return; }
       const context = this.context;
       if (!this.noiseBuffer) this.noiseBuffer = this.createNoiseBuffer();
       const graph = this.createGraph();
@@ -229,6 +238,44 @@
       }
       source.onended = () => this.disposeGraph(graph);
       source.start();
+    }
+
+    startRecordedRain() {
+      const context = this.context;
+      const graph = this.createGraph();
+      this.ambient = graph;
+      graph.sound = "rain2";
+      // 録音はストリーミングし、長い音源全体をAudioBufferへ展開しません。
+      const media = new window.Audio("assets/audio/rain2.mp3");
+      graph.media = media;
+      media.loop = true;
+      media.preload = "none";
+      const source = context.createMediaElementSource(media);
+      graph.nodes.push(source);
+      const volume = context.createGain();
+      graph.nodes.push(volume);
+      const envelope = context.createGain();
+      graph.nodes.push(envelope);
+      graph.volume = volume;
+      graph.envelope = envelope;
+      graph.startedAt = context.currentTime;
+      graph.fadeIn = AUDIO.fadeIn;
+      volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel;
+      envelope.gain.setValueAtTime(0, graph.startedAt);
+      envelope.gain.linearRampToValueAtTime(1, graph.startedAt + graph.fadeIn);
+      source.connect(volume).connect(envelope).connect(context.destination);
+      graph.sources.push({ stop: (at = context.currentTime) => {
+        if (graph.disposed) return;
+        window.clearTimeout(graph.mediaStopTask);
+        graph.mediaStopTask = window.setTimeout(() => this.disposeGraph(graph), Math.max(0, at - context.currentTime) * 1000);
+      } });
+      media.onerror = () => { if (this.ambient === graph && state === "running") this.fail(); };
+      void media.play().then(() => {
+        if (graph.disposed || this.ambient !== graph || state !== "running") {
+          media.pause();
+          this.disposeGraph(graph);
+        }
+      }).catch(() => { if (!graph.disposed && this.ambient === graph && state === "running") this.fail(); });
     }
 
     createGuideBuffer() {

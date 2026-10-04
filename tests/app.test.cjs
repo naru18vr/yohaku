@@ -14,7 +14,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 function harness(options = {}) {
   let now = 0, wallClockOffset = 0, nextTask = 1;
   const timers = new Map(), frames = new Map(), storage = new Map(), media = new Map();
-  const audioContexts = [], audioNodes = [];
+  const audioContexts = [], audioNodes = [], mediaElements = [];
   const faults = { ...options.audioFaults };
   const elements = [], stack = [];
   let activeElement = null;
@@ -107,11 +107,23 @@ function harness(options = {}) {
     suspend() { this.suspendCalls++; if (options.audioFailure === "suspend") return Promise.reject(new Error("suspend failed")); this.changeState("suspended"); return Promise.resolve(); }
     createBuffer(channels, length, sampleRate) { const data = Array.from({ length: channels }, () => new Float32Array(length)); return { numberOfChannels: channels, sampleRate, duration: length / sampleRate, length, getChannelData: (channel) => data[channel] }; }
     createBufferSource() { return node("source", this); }
+    createMediaElementSource(media) { const result = node("media-source", this); result.media = media; return result; }
     createBiquadFilter() { return node("filter", this); }
     createGain() { return node("gain", this); }
     createOscillator() { return node("oscillator", this); }
   }
   const window = {
+    Audio: class {
+      constructor(src) { this.src = src; this.paused = true; mediaElements.push(this); }
+      play() {
+        if (options.mediaFailure) return Promise.reject(new Error("media failed"));
+        if (options.pendingMedia) return new Promise((resolve) => { this.resolvePlay = () => { this.paused = false; resolve(); }; });
+        this.paused = false; return Promise.resolve();
+      }
+      pause() { this.paused = true; }
+      removeAttribute(name) { if (name === "src") this.src = ""; }
+      load() { this.loaded = true; }
+    },
     AudioContext: options.webkitOnly || options.audioUnavailable ? undefined : AudioContext,
     webkitAudioContext: options.webkitOnly ? AudioContext : undefined,
     listeners: {},
@@ -132,7 +144,7 @@ function harness(options = {}) {
   const math = options.random ? Object.assign(Object.create(Math), { random: options.random }) : Math;
   vm.runInNewContext(script, { window, document, localStorage, Date: ClockDate, Math: math, console });
   return {
-    byId, storage, audioContexts, audioNodes, timers, frames, document, faults, endAudio,
+    byId, storage, audioContexts, audioNodes, mediaElements, timers, frames, document, faults, endAudio,
     click(id) { byId(id).dispatch("click"); },
     openSettings() { const button = selectAll(".settings-trigger").find((element) => !element.closest("[hidden]")); button.dispatch("click"); return button; },
     radio(name, value) { const group = selectAll(`input[name="${name}"]`); group.forEach((element) => { element.checked = element.value === String(value); }); group.find((element) => element.checked).dispatch("change"); },
@@ -282,6 +294,63 @@ test("雨・波は開始後だけ合成し、音量変更と無音への切り�
   app.radio("sound", "silent"); await flush();
   assert.equal(app.byId("volume").disabled, true);
   assert.ok(app.audioNodes.filter((node) => node.kind === "source").every((node) => node.stops.length > 0));
+});
+
+test("雨音2は開始後だけ録音を読み込み、音量変更・停止・再開に対応する", async () => {
+  const app = harness(); app.radio("sound", "rain2");
+  assert.equal(app.mediaElements.length, 0);
+  assert.equal(JSON.parse(app.storage.get("yohaku-settings-v1")).sound, "rain2");
+  app.click("start-button"); await flush();
+  const media = app.mediaElements[0];
+  assert.equal(media.src, "assets/audio/rain2.mp3");
+  assert.equal(media.loop, true); assert.equal(media.paused, false);
+  assert.equal(app.audioNodes.filter((node) => node.kind === "source").length, 0);
+  app.input("volume", 70); await flush();
+  assert.equal(app.mediaElements.length, 1);
+  assert.ok(app.audioNodes.some((node) => node.kind === "gain" && Math.abs(node.gain.value - 0.315) < 0.00001));
+  app.click("pause-button"); app.advance(500); await flush();
+  assert.equal(media.paused, true); assert.equal(media.src, "");
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  app.click("pause-button"); await flush();
+  assert.equal(app.mediaElements[1].paused, false);
+  app.radio("sound", "rain"); await flush(); app.advance(500);
+  assert.equal(app.mediaElements[1].paused, true);
+  assert.ok(app.audioNodes.some((node) => node.kind === "filter" && node.frequency.value === 3200));
+});
+
+test("雨音2の読み込み待ち中に終了しても、遅れて再生しない", async () => {
+  const app = harness({ pendingMedia: true }); app.radio("sound", "rain2");
+  app.click("start-button"); await flush();
+  const media = app.mediaElements[0];
+  app.click("stop-button"); app.advance(500);
+  media.resolvePlay(); await flush();
+  assert.equal(media.paused, true); assert.equal(media.src, "");
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+});
+
+test("雨音2の読込・再生エラーでもタイマーを継続し音を解放する", async () => {
+  for (const options of [{ mediaFailure: true }, { audioFaults: { createAt: 1 } }, {}]) {
+    const app = harness(options); app.radio("duration", 1); app.radio("sound", "rain2");
+    app.click("start-button"); await flush();
+    if (!options.mediaFailure && !options.audioFaults) app.mediaElements[0].onerror();
+    assert.equal(app.byId("audio-notice").hidden, false);
+    assert.equal(app.mediaElements[0].paused, true);
+    assert.ok(app.audioNodes.every((node) => node.disconnected));
+    app.advance(60_000); assert.equal(app.byId("complete-view").hidden, false);
+  }
+});
+
+test("雨音2を音量0で開始しても読込まず、終了時に録音を解放する", async () => {
+  const app = harness(); app.radio("duration", 1); app.radio("sound", "rain2"); app.input("volume", 0);
+  app.click("start-button"); await flush(); assert.equal(app.mediaElements.length, 0);
+  app.input("volume", 35); await flush();
+  app.advance(60_000); app.advance(500); await flush();
+  assert.equal(app.byId("complete-view").hidden, false);
+  assert.equal(app.mediaElements[0].paused, true);
+  assert.ok(app.audioNodes.every((node) => node.disconnected));
+  const saved = harness({ saved: JSON.stringify({ sound: "rain2" }) });
+  assert.equal(saved.byId("volume").disabled, false);
+  assert.equal(saved.mediaElements.length, 0);
 });
 
 test("ベルは明示的ONの時だけ一度予約し、停止・再開で旧ベルを取り消す", async () => {
