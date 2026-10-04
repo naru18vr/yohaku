@@ -72,7 +72,7 @@ function harness(options = {}) {
     setItem(key, value) { if (options.storageBlocked) throw new Error("blocked"); storage.set(key, value); },
   };
   const param = (value = 0) => {
-    const result = { value, values: [], setValueAtTime(value, at) { this.value = value; this.values.push({ value, at }); }, linearRampToValueAtTime(value) { this.value = value; }, exponentialRampToValueAtTime(value) { this.value = value; }, setTargetAtTime(value) { if (faults.volume) throw new Error("volume failed"); this.value = value; }, cancelScheduledValues() {}, cancelAndHoldAtTime() {} };
+    const result = { value, values: [], curves: [], setValueAtTime(value, at) { this.value = value; this.values.push({ value, at }); }, linearRampToValueAtTime(value) { this.value = value; }, exponentialRampToValueAtTime(value) { this.value = value; }, setTargetAtTime(value) { if (faults.volume) throw new Error("volume failed"); this.value = value; }, setValueCurveAtTime(values, at, duration) { this.curves.push({ values, at, duration }); this.value = values.at(-1); }, cancelScheduledValues() {}, cancelAndHoldAtTime() {} };
     if (options.legacyCancelHold) delete result.cancelAndHoldAtTime;
     return result;
   };
@@ -114,8 +114,9 @@ function harness(options = {}) {
   }
   const window = {
     Audio: class {
-      constructor(src) { this.src = src; this.paused = true; mediaElements.push(this); }
+      constructor(src) { this.src = src; this.paused = true; this.duration = 660; this.currentTime = 0; this.readyState = 4; this.playCalls = 0; mediaElements.push(this); }
       play() {
+        this.playCalls++;
         if (options.mediaFailure) return Promise.reject(new Error("media failed"));
         if (options.pendingMedia) return new Promise((resolve) => { this.resolvePlay = () => { this.paused = false; resolve(); }; });
         this.paused = false; return Promise.resolve();
@@ -181,8 +182,8 @@ test("初回は3分・無音・ベルOFF。音を自動再生しない", () => {
   assert.equal(app.audioContexts.length, 0);
 });
 
-for (const minutes of [1, 3, 5, 10]) test(`${minutes}分が正確に終了し、再スタートできる`, () => {
-  const app = harness(); app.radio("duration", minutes); app.click("start-button");
+for (const minutes of [1, 3, 5, 10, 17, 45, 60]) test(`${minutes}分が正確に終了し、再スタートできる`, () => {
+  const app = harness(); app.input("custom-duration", minutes); app.click("start-button");
   app.advance(minutes * 60_000 - 1000);
   assert.equal(app.byId("timer").textContent, "00:01");
   assert.equal(app.byId("complete-view").hidden, true);
@@ -197,6 +198,83 @@ for (const minutes of [1, 3, 5, 10]) test(`${minutes}分が正確に終了し、
   app.click("stop-button");
   assert.equal(app.byId("home-view").hidden, false);
   assert.equal(app.timers.size, 0);
+});
+
+test("1〜60分の数値入力・スライダー・保存を同期し、範囲外の値を補正する", () => {
+  const app = harness();
+  for (let minutes = 1; minutes <= 60; minutes++) {
+    app.input("custom-duration", minutes);
+    assert.equal(app.byId("start-label").textContent, `${minutes}分休む`);
+    assert.equal(Number(app.byId("duration-range").value), minutes);
+    assert.equal(JSON.parse(app.storage.get("yohaku-settings-v1")).minutes, minutes);
+  }
+  app.input("duration-range", 27);
+  assert.equal(Number(app.byId("custom-duration").value), 27);
+  app.radio("duration", 3);
+  assert.equal(Number(app.byId("custom-duration").value), 3);
+  for (const [value, expected] of [[100, 60], [0, 1], [12.6, 13], ["", 13]]) {
+    app.input("custom-duration", value); app.byId("custom-duration").dispatch("change");
+    assert.equal(Number(app.byId("custom-duration").value), expected);
+  }
+  for (const minutes of [1, 17, 60, 0, 61, 3.5, "60"]) {
+    const restored = harness({ saved: JSON.stringify({ minutes }) });
+    const expected = Number.isInteger(minutes) && minutes >= 1 && minutes <= 60 ? minutes : 3;
+    assert.equal(Number(restored.byId("custom-duration").value), expected);
+  }
+});
+
+test("60分でも全ての合成音のループを再生成せず、ガイド・ベルと一緒に終了する", async () => {
+  for (const sound of ["rain", "waves", "fire", "white", "pink", "tone40"]) {
+    const app = harness({ sampleRate: 4000 }); app.input("custom-duration", 60); app.radio("sound", sound);
+    app.input("guide-enabled", true, "change"); app.input("bell-enabled", true, "change");
+    app.click("start-button"); await flush();
+    const ambient = app.audioNodes.find(node => node.kind === "source" && node.buffer.numberOfChannels === 2);
+    app.visibility(true); app.elapseWithoutCallbacks(30 * 60_000); app.visibility(false); await flush();
+    assert.equal(app.byId("timer").textContent, "30:00");
+    assert.equal(ambient.starts.length, 1); assert.equal(ambient.stops.length, 0);
+    assert.equal(app.audioNodes.filter(node => node.kind === "source" && node.buffer.numberOfChannels === 2).length, 1);
+    app.advance(30 * 60_000); app.advance(3500); await flush();
+    assert.equal(app.byId("complete-view").hidden, false);
+    assert.ok(app.audioNodes.every(node => node.disconnected));
+  }
+});
+
+test("録音の雨を60分流し、4秒の等電力クロスフェードで2つの再生元を交互に使う", async () => {
+  const app = harness(); app.input("custom-duration", 60); app.radio("sound", "rain2"); app.click("start-button"); await flush();
+  for (let loop = 0; loop < 5; loop++) {
+    const current = app.mediaElements.find(media => !media.paused);
+    app.elapseWithoutCallbacks(656_000);
+    current.currentTime = 656; current.ontimeupdate(); await flush();
+    assert.equal(app.mediaElements.length, 2);
+    assert.ok(app.mediaElements.every(media => !media.paused));
+    const curves = app.audioNodes.filter(node => node.kind === "gain" && node.gain.curves.length).map(node => node.gain.curves.at(-1));
+    assert.equal(curves.length, 2);
+    assert.ok(curves.every(curve => curve.duration === 4));
+    for (let i = 0; i < 65; i++) assert.ok(Math.abs(curves[0].values[i] ** 2 + curves[1].values[i] ** 2 - 1) < 0.000001);
+    app.advance(4000);
+    assert.equal(app.mediaElements.filter(media => !media.paused).length, 1);
+  }
+  assert.equal(app.audioNodes.filter(node => node.kind === "media-source").length, 2);
+  app.advance(300_000); app.advance(500); await flush();
+  assert.equal(app.byId("complete-view").hidden, false);
+  assert.ok(app.mediaElements.every(media => media.paused && !media.src));
+  assert.ok(app.audioNodes.every(node => node.disconnected));
+});
+
+test("録音の次の再生準備が遅れても現音を止めず、終了後に遅れて音を鳴らさない", async () => {
+  const app = harness({ pendingMedia: true }); app.input("custom-duration", 60); app.radio("sound", "rain2");
+  app.click("start-button"); await flush();
+  const current = app.mediaElements[0]; current.resolvePlay(); await flush();
+  current.currentTime = 631; current.ontimeupdate();
+  const next = app.mediaElements[1]; next.readyState = 0;
+  current.currentTime = 657; current.ontimeupdate();
+  assert.equal(current.paused, false); assert.equal(current.loop, true); assert.equal(next.playCalls, 0);
+  next.readyState = 4; next.oncanplay();
+  assert.equal(current.paused, false);
+  app.click("stop-button"); app.advance(500);
+  next.resolvePlay(); await flush();
+  assert.ok(app.mediaElements.every(media => media.paused && !media.src));
+  assert.ok(app.audioNodes.every(node => node.disconnected));
 });
 
 test("バックグラウンドでコールバックが遅れても終了予定時刻に同期する", () => {
@@ -263,7 +341,7 @@ test("中断したAudioContextの終了ベルは取り消し、遅れて鳴ら�
 });
 
 test("設定を検証して保存し、保存不可や壊れたJSONでも開始できる", () => {
-  for (const options of [{ storageBlocked: true }, { saved: "{broken" }, { saved: JSON.stringify({ minutes: 2, sound: "toString", volume: 500, bell: "yes", theme: "bad" }) }]) {
+  for (const options of [{ storageBlocked: true }, { saved: "{broken" }, { saved: JSON.stringify({ minutes: 61, sound: "toString", volume: 500, bell: "yes", theme: "bad" }) }]) {
     const app = harness(options); app.click("start-button");
     assert.equal(app.byId("timer").textContent, "03:00");
   }

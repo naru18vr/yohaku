@@ -94,6 +94,12 @@ main { flex: 1; display: flex; flex-direction: column; align-items: center; just
 .duration-choice input:checked + span::after { content: ""; position: absolute; bottom: 5px; width: 3px; height: 3px; border-radius: 50%; background: currentColor; }
 .duration-choice input:focus-visible, .segment-choice input:focus-visible { outline: none; }
 .duration-choice input:focus-visible + span, .segment-choice input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 4px; }
+.custom-duration { width: min(100%, 260px); margin-top: 12px; }
+.duration-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--muted); }
+.duration-value { display: flex; align-items: center; gap: 8px; }
+#custom-duration { width: 76px; min-height: 44px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); text-align: center; font-size: 16px; }
+#duration-range { width: 100%; min-height: 36px; margin: 4px 0 0; accent-color: var(--accent); }
+#duration-note { margin: 0; font-size: 12px; color: var(--muted); text-align: left; }
 .sound-button { border: 0; background: transparent; display: inline-flex; align-items: center; justify-content: center; min-height: 44px; gap: 10px; margin-top: 20px; padding: 8px 12px; font-size: 14px; letter-spacing: .06em; color: var(--muted); border-radius: 8px; }
 .sound-button > svg { width: 17px; height: 17px; }
 .sound-button .chevron { width: 13px; height: 13px; margin-left: 3px; }

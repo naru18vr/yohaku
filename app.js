@@ -4,6 +4,8 @@
   const STORAGE_KEY = "yohaku-settings-v1";
   const MINUTE_MS = 60_000;
   const UPDATE_INTERVAL_MS = 200;
+  const MAX_MINUTES = 60;
+  const RECORDED_BLEND_SECONDS = 4;
   const AUDIO = { ambientLevel: 0.45, guideLevel: 0.08, bellLevel: 0.1, noiseDuration: 20, noiseBlend: 1, fadeIn: 1.5, guideFadeIn: 0.08, fadeOut: 0.45, stopDelay: 0.5, bellDuration: 3, bellGrace: 0.25, guideTolerance: 0.3 };
   const BREATH = { inhale: 4_000, hold: 2_000, exhale: 6_000, minScale: 0.82, maxScale: 1.08 };
   const BREATH_CYCLE_MS = BREATH.inhale + BREATH.hold + BREATH.exhale;
@@ -40,7 +42,7 @@
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (!saved || typeof saved !== "object") return { ...defaults };
       return {
-        minutes: [1, 3, 5, 10].includes(saved.minutes) ? saved.minutes : defaults.minutes,
+        minutes: Number.isInteger(saved.minutes) && saved.minutes >= 1 && saved.minutes <= MAX_MINUTES ? saved.minutes : defaults.minutes,
         sound: Object.hasOwn(SOUND_NAMES, saved.sound) ? saved.sound : defaults.sound,
         volume: Number.isFinite(saved.volume) ? Math.round(Math.min(100, Math.max(0, saved.volume))) : defaults.volume,
         guide: typeof saved.guide === "boolean" ? saved.guide : defaults.guide,
@@ -144,11 +146,14 @@
       graph.disposed = true;
       if (graph.media) {
         window.clearTimeout(graph.mediaStopTask);
-        graph.media.onended = null;
-        graph.media.onerror = null;
-        graph.media.pause();
-        graph.media.removeAttribute("src");
-        graph.media.load();
+        window.clearTimeout(graph.recordedBlendTask);
+        for (const slot of graph.mediaSlots || [{ media: graph.media }]) {
+          const media = slot.media;
+          media.onended = media.onerror = media.ontimeupdate = media.onloadedmetadata = media.oncanplay = null;
+          media.pause();
+          media.removeAttribute("src");
+          media.load();
+        }
       }
       for (const source of graph.sources) { try { source.stop(); } catch { /* 未開始・終了済みでも切断します。 */ } }
       for (const node of graph.nodes) { try { node.disconnect(); } catch { /* 切断済みのノードは無視します。 */ } }
@@ -352,10 +357,8 @@
       // 録音はストリーミングし、長い音源全体をAudioBufferへ展開しません。
       const media = new window.Audio("assets/audio/rain2.mp3");
       graph.media = media;
-      media.loop = true;
-      media.preload = "none";
-      const source = context.createMediaElementSource(media);
-      graph.nodes.push(source);
+      const slot = { media };
+      graph.mediaSlots = [slot];
       const volume = context.createGain();
       graph.nodes.push(volume);
       const envelope = context.createGain();
@@ -367,19 +370,91 @@
       volume.gain.value = settings.volume / 100 * AUDIO.ambientLevel * graph.volumeScale;
       envelope.gain.setValueAtTime(0, graph.startedAt);
       envelope.gain.linearRampToValueAtTime(1, graph.startedAt + graph.fadeIn);
-      source.connect(volume).connect(envelope).connect(context.destination);
+      volume.connect(envelope).connect(context.destination);
+      graph.activeSlot = slot;
+      this.attachRecordedSlot(graph, slot, true);
       graph.sources.push({ stop: (at = context.currentTime) => {
         if (graph.disposed) return;
         window.clearTimeout(graph.mediaStopTask);
         graph.mediaStopTask = window.setTimeout(() => this.disposeGraph(graph), Math.max(0, at - context.currentTime) * 1000);
       } });
-      media.onerror = () => { if (this.ambient === graph && state === "running") this.fail(); };
       void media.play().then(() => {
         if (graph.disposed || this.ambient !== graph || state !== "running") {
           media.pause();
           this.disposeGraph(graph);
         }
       }).catch(() => { if (!graph.disposed && this.ambient === graph && state === "running") this.fail(); });
+    }
+
+    attachRecordedSlot(graph, slot, active = false) {
+      const media = slot.media;
+      media.loop = true; // 次の音の準備が遅れた場合も現在の録音は止めません。
+      media.preload = active ? "none" : "auto";
+      const source = this.context.createMediaElementSource(media);
+      graph.nodes.push(source);
+      const gain = this.context.createGain();
+      graph.nodes.push(gain);
+      slot.gain = gain;
+      gain.gain.value = active ? 1 : 0;
+      source.connect(gain).connect(graph.volume);
+      media.ontimeupdate = media.onloadedmetadata = media.oncanplay = () => {
+        try { this.syncRecordedLoop(graph); } catch { if (!graph.disposed && this.ambient === graph) this.fail(); }
+      };
+      media.onerror = () => {
+        if (graph.disposed || this.ambient !== graph || state !== "running") return;
+        if (slot === graph.activeSlot) this.fail();
+        else slot.failed = true;
+      };
+      if (!active) media.load();
+    }
+
+    syncRecordedLoop(graph) {
+      if (graph.disposed || this.ambient !== graph || state !== "running" || this.context.state !== "running") return;
+      if (graph.crossfading && this.context.currentTime >= graph.crossfadeEnd) graph.finishCrossfade();
+      const current = graph.activeSlot;
+      const media = current.media;
+      if (!Number.isFinite(media.duration) || media.duration < RECORDED_BLEND_SECONDS * 3) return;
+      const left = media.duration - media.currentTime;
+      if (left > 30) return;
+      if (graph.mediaSlots.length < 2) {
+        const next = { media: new window.Audio("assets/audio/rain2.mp3") };
+        graph.mediaSlots.push(next);
+        this.attachRecordedSlot(graph, next);
+      }
+      const next = graph.mediaSlots.find(slot => slot !== current);
+      if (left > RECORDED_BLEND_SECONDS || graph.crossfading || graph.pendingCrossfade || next.failed || next.media.readyState < 2) return;
+      graph.pendingCrossfade = true;
+      next.media.currentTime = 0;
+      void next.media.play().then(() => {
+        graph.pendingCrossfade = false;
+        if (graph.disposed || this.ambient !== graph || graph.activeSlot !== current || state !== "running" || this.context.state !== "running") {
+          next.media.pause(); return;
+        }
+        try {
+          const now = this.context.currentTime;
+          const seconds = Math.min(RECORDED_BLEND_SECONDS, Math.max(0.25, media.duration - media.currentTime));
+          const incoming = new Float32Array(65), outgoing = new Float32Array(65);
+          for (let i = 0; i < incoming.length; i++) {
+            const angle = i / (incoming.length - 1) * Math.PI / 2;
+            incoming[i] = Math.sin(angle); outgoing[i] = Math.cos(angle);
+          }
+          current.gain.gain.cancelScheduledValues(now);
+          next.gain.gain.cancelScheduledValues(now);
+          current.gain.gain.setValueCurveAtTime(outgoing, now, seconds);
+          next.gain.gain.setValueCurveAtTime(incoming, now, seconds);
+          graph.activeSlot = next;
+          graph.media = next.media;
+          graph.crossfading = true;
+          graph.crossfadeEnd = now + seconds;
+          graph.finishCrossfade = () => {
+            window.clearTimeout(graph.recordedBlendTask);
+            media.pause();
+            try { media.currentTime = 0; } catch { /* 再準備できなくても現在の録音を続けます。 */ }
+            graph.crossfading = false;
+          };
+          graph.recordedBlendTask = window.setTimeout(() => { if (!graph.disposed) graph.finishCrossfade(); }, seconds * 1000);
+        } catch { if (!graph.disposed && this.ambient === graph) this.fail(); }
+      }).catch(() => { graph.pendingCrossfade = false; next.failed = true; });
     }
 
     createGuideBuffer() {
@@ -546,6 +621,8 @@
 
   function syncSettings() {
     document.querySelectorAll('input[name="duration"]').forEach((input) => { input.checked = Number(input.value) === settings.minutes; });
+    byId("custom-duration").value = settings.minutes;
+    byId("duration-range").value = settings.minutes;
     document.querySelectorAll('input[name="sound"]').forEach((input) => { input.checked = input.value === settings.sound; });
     document.querySelectorAll('input[name="theme"]').forEach((input) => { input.checked = input.value === settings.theme; });
     byId("start-label").textContent = `${settings.minutes}分休む`;
@@ -708,11 +785,23 @@
     if (timeHidden) byId("time-toggle").removeAttribute("aria-describedby");
     else byId("time-toggle").setAttribute("aria-describedby", "timer");
   });
-  document.querySelectorAll('input[name="duration"]').forEach((input) => input.addEventListener("change", () => {
-    settings.minutes = Number(input.value);
+  function setMinutes(minutes) {
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_MINUTES) return;
+    settings.minutes = minutes;
     saveSettings();
     syncSettings();
-  }));
+  }
+  document.querySelectorAll('input[name="duration"]').forEach((input) => input.addEventListener("change", () => setMinutes(Number(input.value))));
+  byId("duration-range").addEventListener("input", (event) => setMinutes(Number(event.target.value)));
+  byId("custom-duration").addEventListener("input", (event) => {
+    if (String(event.target.value).trim()) setMinutes(Number(event.target.value));
+  });
+  byId("custom-duration").addEventListener("change", (event) => {
+    const value = String(event.target.value).trim();
+    const minutes = Number(value);
+    if (value && Number.isFinite(minutes)) setMinutes(Math.min(MAX_MINUTES, Math.max(1, Math.round(minutes))));
+    else syncSettings();
+  });
   document.querySelectorAll('input[name="sound"]').forEach((input) => input.addEventListener("change", () => {
     settings.sound = input.value;
     saveSettings();
